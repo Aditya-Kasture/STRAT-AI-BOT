@@ -1,0 +1,14 @@
+Adding to part 2 features from Yaseen:
+
+
+Manual Intake form capture for clients (MCQ) - Internal option to do form internally, all of which would be collecting information for Yes/No. - Google Form with additional documentation provided - Viewed manually. - Automatic Yes's and automatic no's.- fast decision  clean logics - User will not know until cam approves. If no - CAM HAS TO SAY NO. - email send automatically + UI/UX for cam to swipe left and right on based on deal.
+Secure Upload link for document collection will be done via amplify. Automation and logic based document collection. Basic follow-up automation.
+
+Amplifi - > Document Collection + Lev _Packaging. -> Long term production and partnership deals
+
+Salesforce is going to be system of record.
+
+
+Pre-screening deals/doc collection (Falls into onboarding)
+
+Very lightweight broker submission portal - For holding CAM accountable to phase 2
