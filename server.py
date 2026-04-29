@@ -28,8 +28,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Res
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
-# ChromaDB for RAG (uses built-in sentence-transformer embeddings — no OpenAI key needed)
+# ChromaDB for RAG — disabled if DISABLE_RAG=true (saves ~400MB RAM on low-memory hosts)
+_DISABLE_RAG = os.getenv("DISABLE_RAG", "").lower() in ("1", "true", "yes")
 try:
+    if _DISABLE_RAG:
+        raise ImportError("RAG disabled via DISABLE_RAG env var")
     import chromadb
     from chromadb.utils import embedding_functions
     HAS_CHROMA = True
