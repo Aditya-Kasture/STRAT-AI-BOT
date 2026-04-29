@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: strat-ai-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: HOST
+        value: 0.0.0.0
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: LLM_MODEL
+        value: claude-sonnet-4-6
+      - key: CHROMA_DIR
+        value: ./chroma_db
+      - key: DATA_DIR
+        value: ./data
+      - key: FRONTEND_DIR
+        value: ./frontend
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: HUBSPOT_API_KEY
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      - key: CALENDLY_URL
+        sync: false
+      - key: CALENDLY_URL_INTRO
+        sync: false
+      - key: STRAT_AI_WEBSITE_URL
+        sync: false
+      - key: STRAT_AI_CONTACT_EMAIL
+        sync: false

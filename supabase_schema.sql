@@ -34,7 +34,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_stage      ON sessions(stage);
 -- Row-level security: allow server to read/write all rows
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 
--- Policy: service role key has full access (used by the bot backend)
+-- Policy: allow all operations (safe to re-run)
+DROP POLICY IF EXISTS "service_full_access" ON sessions;
 CREATE POLICY "service_full_access" ON sessions
   USING (true)
   WITH CHECK (true);

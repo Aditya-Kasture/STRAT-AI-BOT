@@ -168,6 +168,7 @@ class Session:
     # Item 19: Calendly tracking
     calendly_clicked: bool = False
     completed_at: str = ""
+    feedback: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -623,51 +624,55 @@ rag = RAGEngine()
 # PROMPT ENGINE
 # ===================================================================
 
-BASE_SYSTEM = """You are Strat AI Solutions' Audit Scoping Bot -- an expert scoping assistant for CRE brokerages, mortgage brokerages, CRE lenders, and adjacent real estate operators. Built by Strat AI Solutions, founded by Yaseen Abdelrahman.
+BASE_SYSTEM = """You are Strat AI Solutions' Audit Scoping Bot — an expert scoping assistant for CRE brokerages, mortgage brokerages, CRE lenders, and adjacent real estate operators. Built by Strat AI Solutions, founded by Yaseen Abdelrahman.
 
-YOUR JOB: Classify -> Qualify -> Snapshot Audit (batched 5-8) -> Synthesize -> Deep Audit (targeted) -> Proposal-Ready Output.
+YOUR JOB: Classify → Qualify → Snapshot Audit → Synthesize → Deep Audit (targeted) → Proposal-Ready Output.
 
 HARD RULES:
-- Present questions in a batch (typically 5-8). In the SAME message introducing a batch, tell the user: "Feel free to answer one at a time -- pick whichever you want to start with. Or answer all of them at once if you prefer. Both work." NEVER require all questions to be answered at once. NEVER penalize or re-prompt if the user answers only one, and NEVER penalize if they answer all six at once -- accept any count and proceed.
+- Ask questions ONE AT A TIME. After the user answers, use their response to adapt and inform your next question. Never dump 6+ questions at once. If presenting 2-3 questions together, separate each with a full blank line and a divider line (─────────). Prefer multiple-choice format — always offer 4 labeled options (A, B, C, D) when applicable. Learn from each answer before moving on.
 - Never skip classification or qualification.
 - Never recommend automation without explaining the bottleneck first.
-- Never hide uncertainty -- state what is missing.
+- Never hide uncertainty — state what is missing.
 - Never call a poor fit a good fit.
-- Never give generic AI ideas -- tie every opportunity to a real workflow, user, system, and bottleneck.
+- Never give generic AI ideas — tie every opportunity to a real workflow, user, system, and bottleneck.
 - Push for specifics: volumes, cycle times, team roles, systems, error rates.
 - Quantify impact: hours lost, delays, conversion loss, compliance risk.
 - If the client is rambling, summarize and redirect.
-- Follow bottleneck signals -- pivot when something urgent surfaces.
+- Follow bottleneck signals — pivot when something urgent surfaces.
 - Short bullets over long essays.
-- After each batch, summarize what you heard, note gaps, then ask the next batch.
+- After each answer, briefly acknowledge what you heard, then ask the next question.
 - Request artifacts when helpful: SOPs, templates, checklists, pipeline screenshots, email templates.
-- NEVER use markdown formatting in your responses. No asterisks for bold, no dashes for lists. Use plain text, numbered lists (1. 2. 3.), and line breaks for readability. No special characters like * or **.
+- Use markdown formatting for structure: **bold** for key terms and bottleneck names, *italic* for emphasis, ## for section headings, - for bullet lists, and numbered lists (1. 2. 3.) for sequences. Keep it scannable, not verbose.
+- ALWAYS lead with the highest-revenue bottleneck first. The order of bottlenecks must reflect what makes Strat AI and the client the most money. Never bury the top opportunity.
+- When the audit reaches proposal stage, ALWAYS direct the client to book their scoping call via the Calendly link. NEVER say "Yaseen will reach out to you" or "someone will contact you" — the client must click the link themselves to book.
+- Do NOT present formal proposals, pricing, or engagement recommendations until the PROPOSAL stage. During synthesis and deep audit, focus only on identifying and quantifying bottlenecks.
+- NEVER use -- (double hyphen) in your responses. Use — (em dash) instead.
 
 TONE: Founder-friendly. Direct. Analytical. Commercially sharp. Not corporate. Not robotic.
 
 OFFERINGS YOU CAN RECOMMEND:
-1. Beta Jumpstart Sprint -- Automate one bottleneck in one week, fixed price, guaranteed result
-2. Command Center -- Full workflow buildout across all identified bottlenecks
-3. Custom Packages -- Multi-scope bundles, bespoke automation builds
-4. Strategic/Flagship Partnership -- Co-building at scale, case study arrangements
+1. Beta Jumpstart Sprint — Automate one bottleneck in one week, fixed price, guaranteed result
+2. Command Center — Full workflow buildout across all identified bottlenecks
+3. Custom Packages — Multi-scope bundles, bespoke automation builds
+4. Strategic/Flagship Partnership — Co-building at scale, case study arrangements
 
 BETA WORKFLOW SPRINTS (match to specific bottleneck):
-1. Smart Document Collection -- Portal + reminders, zero chasing
-2. Executive Dashboards -- Real-time pipeline & KPI visualization
-3. Lead Follow-Up -- 5-min first response, multi-channel (email/SMS/voicemail)
-4. Onboarding Timeline -- Forms, foldering, timeline tracking
-5. Team Accountability -- Daily outreach tracker & leaderboards
-6. Scheduling & No-Show Recovery -- Confirmations, reminders, auto-rebook
-7. Pipeline/Deal Tracking -- Automatic stage updates from rep and client actions
+1. Smart Document Collection — Portal + reminders, zero chasing
+2. Executive Dashboards — Real-time pipeline & KPI visualization
+3. Lead Follow-Up — 5-min first response, multi-channel (email/SMS/voicemail)
+4. Onboarding Timeline — Forms, foldering, timeline tracking
+5. Team Accountability — Daily outreach tracker & leaderboards
+6. Scheduling & No-Show Recovery — Confirmations, reminders, auto-rebook
+7. Pipeline/Deal Tracking — Automatic stage updates from rep and client actions
 
-PATTERN RECOGNITION -- Always watch for:
+PATTERN RECOGNITION — Always watch for:
 - No single source of truth
 - Document chasing and incomplete submissions
 - No proactive status alerts or visibility
 - Task assignment and communication overhead
 - Business logic in someone's head, not codified
 - Reporting that depends on manual updates
-- Founder/operator bottleneck -- too much depends on one person
+- Founder/operator bottleneck — too much depends on one person
 
 ENGAGEMENT PATH LOGIC:
 - One clear bottleneck + existing stack -> Sprint/MVP
@@ -688,22 +693,22 @@ Determine if this is a Broker or Lender operation.
 - Lender = originates, underwrites, approves, conditions, closes, and funds loans internally
 - If both, choose dominant workflow first and note secondary
 
-Ask 6 targeted multiple-choice questions. Format EVERY question the same way: one-sentence question on its own line, followed by exactly 4 options labeled "A) ...", "B) ...", "C) ...", "D) ..." -- each option on its own line. No markdown, no bullets, no bold. Use identical spacing across all 6 questions.
+Ask ONE multiple-choice question at a time. Format each question as: one clear sentence on its own line, followed by exactly 4 options labeled "A) ...", "B) ...", "C) ...", "D) ..." — each option on its own line. No markdown, no bullets, no bold.
 
-Before listing the questions, include this single guidance line verbatim: "Pick one to start with -- we'll work through them in whatever order you prefer. If you'd rather answer all six at once, that also works."
+After the user answers, briefly acknowledge what they said (one sentence), then ask your next question — adapting it based on what you just learned. Keep questions focused and build on previous answers.
 
-If the user answers only one question, accept it, acknowledge briefly, and keep the remaining questions available. If they answer all six in one message, accept and process without re-prompting. Never require all six up front.
+If you present 2 questions in the same message (only when necessary), separate them with a blank line and a divider line: ─────────
 
-When you have enough info, end your response with the exact text: CLASSIFICATION: BROKER or CLASSIFICATION: LENDER or CLASSIFICATION: HYBRID"""
+When you have enough information to classify, end your response with the exact text: CLASSIFICATION: BROKER or CLASSIFICATION: LENDER or CLASSIFICATION: HYBRID"""
 
     elif s.stage == Stage.QUALIFY:
         return f"""
 CURRENT STAGE: QUALIFICATION GATE
 Client classified as: {ct.upper()}
 
-Start your message with this guidance line verbatim: "Pick one to start -- answer in any order. Or answer all at once if you prefer."
+Ask ONE question at a time. After each answer, acknowledge briefly (one sentence), then ask the next — adapting based on what you've learned. Start with the most important factor given what you already know.
 
-Gather these in a batch of 6-8 questions. Accept any number of answers (one to all). Never penalize or re-prompt for partial responses.
+Qualification areas to cover (in natural order, not all at once):
 - Decision-maker status (are they the person who signs off?)
 - Other stakeholders involved
 - Top 1-3 business challenges (specific, not vague)
@@ -712,10 +717,15 @@ Gather these in a batch of 6-8 questions. Accept any number of answers (one to a
 - Company size + business model
 - Prior AI/automation experience
 
+Prefer multiple-choice questions (A/B/C/D) where possible. If you must ask 2 questions in one message, separate them with a blank line and a divider: ─────────
+
 Flag POOR FIT if: no clear problem, no authority, no budget conversation, wants off-the-shelf SaaS, or unrealistic timeline. Be helpful but label the risk.
 
-When gathered, end with: QUALIFICATION: COMPLETE
-If flagging: QUALIFICATION: FLAG - [specific reason]"""
+When you have enough to qualify, end with one of these exact tokens (based on your assessment):
+QUALIFICATION: COMPLETE FIT: GOOD   (decision-maker, clear problem, budget discussion started, realistic timeline)
+QUALIFICATION: COMPLETE FIT: MODERATE   (decision-maker but budget unclear, or problem vague but real)
+QUALIFICATION: COMPLETE FIT: POOR   (not decision-maker, no clear problem, no budget, wants off-the-shelf SaaS)
+QUALIFICATION: FLAG - [reason] FIT: POOR   (serious disqualifier found)"""
 
     elif s.stage == Stage.SNAPSHOT:
         answered = set(s.snapshot_answers.keys())
@@ -723,31 +733,35 @@ If flagging: QUALIFICATION: FLAG - [specific reason]"""
         q_text = "\n".join(f"- {q['text']}" for q in batch) if batch else "No more questions."
         answered_count = len(s.snapshot_answers)
 
-        sig_text = ""
+        sig_qs = []
         if s.snapshot_batch > 0:
-            sig_text = """
-Also consider weaving in one of these signature questions naturally:
-- What would break if volume doubled?
-- What does your team hate doing most?
-- What would be catastrophic if automated incorrectly?"""
+            sig_qs = [
+                "What would break first if your volume suddenly doubled?",
+                "What does your team hate doing most — the task they'd automate tomorrow if they could?",
+                "What would be catastrophic if it were automated incorrectly?",
+            ]
 
         prev = json.dumps(s.snapshot_answers, indent=1)[:3000]
 
+        sig_note = f"\nAlso consider weaving in one of these signature questions naturally when the moment is right:\n" + "\n".join(f"- {q}" for q in sig_qs) if sig_qs else ""
+
         return f"""
-CURRENT STAGE: SNAPSHOT AUDIT -- Batch {s.snapshot_batch + 1}
+CURRENT STAGE: SNAPSHOT AUDIT — Batch {s.snapshot_batch + 1}
 Client type: {ct.upper()}
-Progress: {answered_count} batches of answers collected so far.
+Progress: {answered_count} answer batches collected so far.
 
-Start your message with this guidance line verbatim: "Pick whichever one you want to start with -- or answer all of them together. Your call."
+Ask 1-2 questions from the list below per message. After the user responds, acknowledge what you heard (2-3 short bullets), then ask the next question — adapting your wording based on what you've learned. Never dump all questions at once.
 
-Ask these questions naturally -- adapt wording to conversation, don't read robotically. Accept any number of answers from the user (one to all) without penalizing or re-prompting:
+Format each question as a clear sentence, followed by 4 options (A) B) C) D)) where applicable. If presenting 2 questions in one message, separate them with a blank line and a divider: ─────────
+
+Questions to draw from (adapt naturally, don't read robotically):
 {q_text}
-{sig_text}
+{sig_note}
 
-After the user responds:
+After each answer:
 1. Summarize what you heard (short bullets)
 2. Flag any bottleneck signals worth following
-3. Note any missing specifics (volumes, cycle times, team sizes, systems)
+3. Note missing specifics (volumes, cycle times, team sizes, systems)
 
 Previous answers collected:
 {prev}
@@ -769,7 +783,7 @@ Flags: {s.flags}
 Generate a COMPLETE synthesis with ALL of these sections. Use plain text, numbered lists, and clear headers. NO markdown formatting (no asterisks, no dashes for bullets).
 
 Client Classification
-{ct.upper()} -- explain why
+{ct.upper()} — explain why
 
 Executive Summary
 2-3 paragraphs summarizing current operation, team, volume, key workflows
@@ -797,7 +811,7 @@ Missing Information
 What we still don't know and need to find out
 
 Recommended Engagement Path
-One of: Sprint, Command Center, Discovery Audit, Accelerated Scoping -- with rationale
+One of: Sprint, Command Center, Discovery Audit, Accelerated Scoping — with rationale
 
 30/60/90 Day Plan
 0-30: Stabilize, map, quick wins
@@ -818,14 +832,18 @@ End with: SYNTHESIS: COMPLETE"""
         prev = json.dumps(s.deep_answers, indent=1)[:2000]
 
         return f"""
-CURRENT STAGE: DEEP AUDIT -- Module: {current_mod} ({s.deep_module_idx + 1} of {len(mods)})
+CURRENT STAGE: DEEP AUDIT — Module: {current_mod} ({s.deep_module_idx + 1} of {len(mods)})
 Client type: {ct.upper()}
 Remaining modules: {mods[s.deep_module_idx:]}
 
-For this module, ask 5-8 questions to extract:
+Ask ONE question at a time for this module. After each answer, acknowledge what you heard (briefly), then ask the next — adapted to what you've just learned. Start with the most critical aspect of this module based on the snapshot audit so far.
+
+Key areas to probe for this module:
 {q_text}
 
-For each answer, capture: current-state workflow, systems touched, handoffs, manual steps, failure points, time loss, duplicate entry, compliance risks, what must stay human, what could be automated.
+Prefer multiple-choice (A/B/C/D) where applicable. For each answer, capture: current-state workflow, systems touched, handoffs, manual steps, failure points, time loss, duplicate entry, compliance risks, what must stay human, what could be automated.
+
+If 2 questions must appear in the same message, separate with a blank line and a divider: ─────────
 
 Previous deep audit answers: {prev}
 
@@ -855,13 +873,13 @@ Synthesis highlights:
 Structure the proposal as:
 
 1. Current State
-What exists today -- systems, processes, team, volume, pain points
+What exists today — systems, processes, team, volume, pain points
 
 2. Desired Future State
 What the operation should look like post-automation
 
 3. Phase 1 Scope (30-day deliverable)
-Highest-ROI build -- specific features, integrations, and workflows
+Highest-ROI build — specific features, integrations, and workflows
 Map to specific Beta Workflow Sprint(s)
 
 4. Phase 2 Opportunities (60-90 day expansion)
@@ -874,7 +892,7 @@ What must be true for this to work
 Specific KPIs: faster intake, shorter doc cycle, reduced manual follow-up, more deals per headcount, fewer missed tasks, better compliance, dashboard visibility
 
 7. Recommended Offering
-Sprint ($X range), Command Center ($X range), or Partnership -- with rationale
+Sprint ($X range), Command Center ($X range), or Partnership — with rationale
 
 8. Implementation Sequence
 Week-by-week for Phase 1
@@ -930,7 +948,7 @@ async def call_llm(system_prompt: str, messages: List[Dict[str, Any]],
         async with httpx.AsyncClient(timeout=90) as client:
             payload = {
                 "model": LLM_MODEL,
-                "max_tokens": 4096,
+                "max_tokens": 8192,
                 "system": system_prompt,
                 "messages": deduped[-MAX_HISTORY:],
             }
@@ -965,10 +983,115 @@ async def call_llm(system_prompt: str, messages: List[Dict[str, Any]],
             log.error(f"Unexpected response format: {data}")
             return "I received an unexpected response. Please try sending your message again."
     except httpx.TimeoutException:
-        return "The request took too long. Please try again -- I'll work faster this time."
+        return "The request took too long. Please try again — I'll work faster this time."
     except Exception as e:
         log.error(f"LLM call failed: {e}")
-        return f"Connection error -- please try again in a moment. ({type(e).__name__})"
+        return f"Connection error — please try again in a moment. ({type(e).__name__})"
+
+
+async def stream_llm(system_prompt: str, messages: List[Dict[str, Any]],
+                     session: Optional[Session] = None, websocket=None) -> str:
+    """Stream LLM response using Anthropic's streaming API.
+    Sends chunks to websocket in real-time if provided."""
+    chat_msgs: List[Dict[str, str]] = []
+    for m in messages:
+        role = "assistant" if m.get("role") == "bot" else "user"
+        chat_msgs.append({"role": role, "content": m["content"]})
+
+    # Ensure alternating roles
+    deduped: List[Dict[str, str]] = []
+    for m in chat_msgs:
+        if deduped and deduped[-1]["role"] == m["role"]:
+            deduped[-1]["content"] += "\n\n" + m["content"]
+        else:
+            deduped.append(m)
+
+    if not deduped or deduped[0]["role"] != "user":
+        deduped.insert(0, {"role": "user", "content": "Begin."})
+
+    if not ANTHROPIC_API_KEY:
+        return "ERROR: ANTHROPIC_API_KEY is not set. Please add it to your .env file."
+
+    full_text = ""
+    input_tokens = 0
+    output_tokens = 0
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            payload = {
+                "model": LLM_MODEL,
+                "max_tokens": 8192,
+                "system": system_prompt,
+                "messages": deduped[-MAX_HISTORY:],
+                "stream": True,
+            }
+            log.info(f"Streaming Anthropic API -- model: {LLM_MODEL}, messages: {len(deduped)}")
+            async with client.stream(
+                "POST",
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=payload,
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    try:
+                        data = json.loads(body)
+                        err_msg = data.get("error", {}).get("message", "Unknown error")
+                    except Exception:
+                        err_msg = f"HTTP {resp.status_code}"
+                    log.error(f"Anthropic streaming API error: {err_msg}")
+                    return f"I encountered an issue connecting to the AI service. Please try again in a moment. (Error: {err_msg})"
+
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    chunk_type = chunk.get("type", "")
+
+                    if chunk_type == "message_start":
+                        usage = chunk.get("message", {}).get("usage", {})
+                        input_tokens = usage.get("input_tokens", 0)
+
+                    elif chunk_type == "message_delta":
+                        usage = chunk.get("usage", {})
+                        output_tokens = usage.get("output_tokens", 0)
+
+                    elif chunk_type == "content_block_delta":
+                        delta = chunk.get("delta", {})
+                        text = delta.get("text", "")
+                        if text:
+                            full_text += text
+                            if websocket is not None:
+                                try:
+                                    await websocket.send_json({"type": "chunk", "content": text})
+                                except Exception:
+                                    pass
+
+        # Cost tracking
+        if session:
+            cost = (input_tokens * SONNET_INPUT_COST) + (output_tokens * SONNET_OUTPUT_COST)
+            session.api_cost_usd += cost
+            session.api_calls += 1
+            log.info(f"Session {session.id[:8]}: +${cost:.4f} (total: ${session.api_cost_usd:.4f})")
+
+        return full_text
+
+    except httpx.TimeoutException:
+        return "The request took too long. Please try again — I'll work faster this time."
+    except Exception as e:
+        log.error(f"Stream LLM call failed: {e}")
+        return f"Connection error — please try again in a moment. ({type(e).__name__})"
 
 
 # ===================================================================
@@ -996,7 +1119,7 @@ async def generate_structured_report(session: Session) -> str:
     }
 
     report_prompt = f"""Generate a structured audit report from the following session data.
-This report will be read by a CRE principal -- it must be clear, concise, and actionable.
+This report will be read by a CRE principal — it must be clear, concise, and actionable.
 They should be able to read it in under 5 minutes and know exactly what the problem is,
 what the recommendation is, and what the next step is.
 
@@ -1009,7 +1132,7 @@ STRICT FORMATTING RULES (violating any of these will make the report unpresentab
 Session data:
 {json.dumps(all_data, indent=2)[:6000]}
 
-Use this EXACT structure. Section order is LOCKED -- do not reorder, rename, merge, or omit sections. Output sections 1-7 as normal. For section 8 (NEXT STEPS), output ONLY the literal static text provided below -- do not generate dynamic content, do not reword, do not add context. Copy it exactly.
+Use this EXACT structure. Section order is LOCKED — do not reorder, rename, merge, or omit sections. Output sections 1-7 as normal. For section 8 (NEXT STEPS), output ONLY the literal static text provided below — do not generate dynamic content, do not reword, do not add context. Copy it exactly.
 
 1. CLIENT OVERVIEW
 Firm name, type (broker/lender/hybrid), size, key stakeholders, fit status (Good/Moderate/Poor)
@@ -1149,6 +1272,14 @@ def detect_transitions(text: str, session: Session) -> Session:
                     session.stage = Stage.PROPOSAL
             if "flag" in actions and actions["flag"] not in session.flags:
                 session.flags.append(actions["flag"])
+            # Detect fit assessment from qualify stage
+            fit_match = re.search(r"FIT:\s*(GOOD|MODERATE|POOR)", text, re.IGNORECASE)
+            if fit_match:
+                fit_str = fit_match.group(1).lower()
+                try:
+                    session.fit = Fit(fit_str)
+                except ValueError:
+                    pass
             break
     return session
 
@@ -1157,6 +1288,7 @@ def clean_control_tokens(text: str) -> str:
     patterns = [
         r"CLASSIFICATION:\s*(BROKER|LENDER|HYBRID)\s*",
         r"QUALIFICATION:\s*(COMPLETE|FLAG[^\n]*)\s*",
+        r"FIT:\s*(GOOD|MODERATE|POOR)\s*",
         r"SNAPSHOT:\s*(COMPLETE|CONTINUE)\s*",
         r"SYNTHESIS:\s*COMPLETE\s*",
         r"DEEP_MODULE:\s*COMPLETE\s*",
@@ -1229,15 +1361,24 @@ class SessionStore:
         return [s.to_dict() for s in self._sessions.values()]
 
     def cleanup(self) -> None:
-        """Item 4: Actually clean up expired sessions."""
+        """Remove in-memory sessions older than SESSION_TTL_HOURS."""
         cutoff = datetime.utcnow() - timedelta(hours=SESSION_TTL_HOURS)
         expired = []
         for sid, s in self._sessions.items():
             try:
-                if datetime.fromisoformat(s.created_at) < cutoff:
+                ts = (s.created_at or "").strip()
+                if not ts:
+                    continue
+                # Normalise Z suffix for Python < 3.11 and strip timezone info
+                # so we can compare against a naive UTC cutoff
+                ts_norm = ts.replace("Z", "+00:00")[:26]
+                dt = datetime.fromisoformat(ts_norm)
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)  # treat stored value as UTC, drop tz
+                if dt < cutoff:
                     expired.append(sid)
             except Exception:
-                expired.append(sid)
+                pass  # never expire a session we can't parse — leave it in memory
         for sid in expired:
             del self._sessions[sid]
         if expired:
@@ -1275,6 +1416,7 @@ def _session_to_supabase_row(session: Session) -> Dict[str, Any]:
         "deep_modules": session.deep_modules,
         "deep_module_idx": session.deep_module_idx,
         "metadata": session.metadata,
+        "feedback": session.feedback,
     }
 
 
@@ -1379,7 +1521,7 @@ async def send_slack_notification(session: Session) -> None:
 # CONVERSATION HANDLER
 # ===================================================================
 
-async def handle_message(session: Session, user_message: str) -> Dict[str, Any]:
+async def handle_message(session: Session, user_message: str, websocket=None) -> Dict[str, Any]:
     extract_user_data(user_message, session)
 
     session.messages.append({
@@ -1403,12 +1545,11 @@ async def handle_message(session: Session, user_message: str) -> Dict[str, Any]:
         rag_context = rag.query(user_message, collections=target, n=4)
 
     system_prompt = build_full_system_prompt(session, rag_context)
-    response = await call_llm(system_prompt, session.messages[-MAX_HISTORY:], session=session)
+    response = await stream_llm(system_prompt, session.messages[-MAX_HISTORY:], session=session, websocket=websocket)
 
     prev_stage = session.stage
     session = detect_transitions(response, session)
     display_text = clean_control_tokens(response)
-    display_text = strip_markdown(display_text)  # Item 9
 
     session.messages.append({
         "role": "bot",
@@ -1424,9 +1565,14 @@ async def handle_message(session: Session, user_message: str) -> Dict[str, Any]:
         asyncio.create_task(push_to_hubspot(session))
         asyncio.create_task(send_slack_notification(session))
 
-    # Persist to Supabase on every stage transition or stage-change
-    if session.stage != prev_stage or session.stage in (Stage.PROPOSAL, Stage.COMPLETE):
-        asyncio.create_task(save_to_supabase(session))
+    # Persist to Supabase after every message so no data is lost between restarts
+    asyncio.create_task(save_to_supabase(session))
+
+    summary = summarize_progress(session)
+    if summary.get("bottlenecks"):
+        session.metadata["top_bottleneck"] = summary["bottlenecks"][0]
+    if summary.get("opportunities"):
+        session.metadata["top_opportunity"] = summary["opportunities"][0]["name"]
 
     return {
         "type": "bot_message",
@@ -1442,7 +1588,7 @@ async def handle_message(session: Session, user_message: str) -> Dict[str, Any]:
         "show_calendly": calendly_show,
         "calendly_url": CALENDLY_URL if calendly_show else "",
         "api_cost": round(session.api_cost_usd, 4),
-        "summary": summarize_progress(session),
+        "summary": summary,
     }
 
 
@@ -1637,13 +1783,16 @@ async def startup():
                     log.warning(f"Failed to ingest {f}: {e}")
     # Item 4: Start cleanup loop (was defined but task created correctly)
     asyncio.create_task(_cleanup_loop())
-    # Load any prior sessions from Supabase into the in-memory store
+    # Restore all persisted sessions from Supabase into the in-memory store
     if _supabase_client:
         try:
             prior = await load_supabase_sessions()
+            loaded = 0
             for row in prior:
-                sid = row.get("id")
-                if sid and sid not in store._sessions:
+                try:
+                    sid = row.get("id")
+                    if not sid or sid in store._sessions:
+                        continue
                     s = Session(
                         id=sid,
                         created_at=row.get("created_at", ""),
@@ -1668,7 +1817,10 @@ async def startup():
                         metadata=row.get("metadata") or {},
                     )
                     store._sessions[sid] = s
-            log.info(f"Loaded {len(prior)} sessions from Supabase")
+                    loaded += 1
+                except Exception as row_err:
+                    log.warning(f"Skipping malformed Supabase row {row.get('id', '?')}: {row_err}")
+            log.info(f"Restored {loaded}/{len(prior)} sessions from Supabase")
         except Exception as e:
             log.warning(f"Failed to load Supabase sessions on startup: {e}")
     log.info("Server ready")
@@ -1822,15 +1974,22 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
 .stage-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;background:rgba(91,184,245,.1);color:#5bb8f5;border:1px solid rgba(91,184,245,.25);margin-bottom:10px}
 .stage-chip .chip-dot{width:6px;height:6px;border-radius:50%;background:#5bb8f5;flex-shrink:0}
 
-/* Standardized MCQ styling -- identical container, spacing, typography across all questions */
-.mcq-block{margin:14px 0;padding:14px;background:#0b1428;border:1px solid #1a2a50;border-radius:10px}
-.mcq-question{font-size:13.5px;font-weight:600;color:#d8e8ff;line-height:1.55;margin-bottom:10px}
-.mcq-options{display:flex;flex-direction:column;gap:8px}
-.mcq-btn{display:block;width:100%;padding:10px 14px;background:#0a2a4a;border:1px solid #1a6fb5;color:#5bb8f5;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;line-height:1.45;transition:all .15s;text-align:left;position:relative}
-.mcq-btn:hover{background:#1a6fb5;color:#fff;border-color:#5bb8f5}
-.mcq-btn.selected{background:#1a6fb5;color:#fff;border-color:#5bb8f5}
-.mcq-btn.selected::after{content:' \2713';font-weight:700}
-.mcq-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+/* MCQ question blocks */
+.mcq-block{margin:16px 0;padding:16px 18px;background:rgba(10,16,38,.85);border:1px solid rgba(26,42,80,.9);border-left:3px solid rgba(91,184,245,.35);border-radius:12px}
+.mcq-question{font-size:13.5px;font-weight:600;color:#d8e8ff;line-height:1.6;margin-bottom:12px}
+.mcq-options{display:flex;flex-direction:column;gap:7px;margin-bottom:4px}
+.mcq-opt{display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(8,14,32,.7);border:1px solid rgba(26,42,80,.8);border-radius:8px;cursor:pointer;transition:all .15s;color:#8faac4;font-size:13px;user-select:none}
+.mcq-opt:hover{border-color:rgba(91,184,245,.4);background:rgba(26,56,96,.4);color:#c8ddf0}
+.mcq-opt.selected{border-color:#1a6fb5;background:rgba(26,111,181,.2);color:#d8e8ff}
+.mcq-opt.locked{cursor:default;pointer-events:none}
+.mcq-opt.locked:not(.selected){opacity:.45}
+.mcq-opt-letter{width:26px;height:26px;border-radius:50%;background:rgba(26,64,110,.5);border:1px solid rgba(91,184,245,.25);color:#5bb8f5;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
+.mcq-opt.selected .mcq-opt-letter{background:#1a6fb5;border-color:#5bb8f5;color:#fff}
+.mcq-opt-text{flex:1;line-height:1.45}
+.mcq-divider{border:none;border-top:1px solid rgba(26,42,80,.7);margin:14px 0}
+.mcq-confirm{display:none;margin-top:12px;padding:9px 20px;background:linear-gradient(135deg,#1a6fb5,#1e90ff);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:12.5px;cursor:pointer;transition:all .15s;letter-spacing:.3px;align-items:center;gap:6px}
+.mcq-confirm:hover{background:linear-gradient(135deg,#1e90ff,#5bb8f5);transform:translateY(-1px)}
+.mcq-confirm:disabled{opacity:.5;cursor:not-allowed;transform:none}
 
 /* Calendly banner -- polished */
 .calendly-banner{margin:14px 0;padding:18px 20px;background:linear-gradient(135deg,rgba(26,111,181,.15),rgba(91,184,245,.08));border:1px solid rgba(91,184,245,.35);border-radius:14px;text-align:center;box-shadow:0 8px 24px rgba(26,111,181,.15)}
@@ -1878,6 +2037,48 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#1a2540;border-radius:3px}
 textarea::placeholder{color:#445}
+/* Streaming message */
+.msg.streaming .stream-cursor{display:inline-block;width:2px;height:14px;background:#5bb8f5;margin-left:2px;animation:blink .7s step-end infinite;vertical-align:text-bottom}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+/* Markdown in bot messages */
+.msg.bot strong{color:#7dd3fc;font-weight:700}
+.msg.bot em{color:#c4b5fd;font-style:italic}
+.msg.bot h2{font-size:14px;font-weight:700;color:#5bb8f5;margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid rgba(91,184,245,.2)}
+.msg.bot h3{font-size:13px;font-weight:700;color:#93c5fd;margin:10px 0 4px}
+.msg.bot ul,.msg.bot ol{margin:6px 0 6px 18px;display:flex;flex-direction:column;gap:3px}
+.msg.bot li{font-size:13px;color:#d0d8e8;line-height:1.5}
+.msg.bot p{margin:4px 0;color:#d0d8e8;line-height:1.65}
+/* Report canvas drawer */
+#report-canvas{position:fixed;right:-520px;top:0;width:500px;height:100vh;background:#0a1428;border-left:1px solid rgba(91,184,245,.25);z-index:300;transition:right .4s cubic-bezier(.2,.7,.2,1);display:flex;flex-direction:column;box-shadow:-8px 0 40px rgba(0,0,0,.5)}
+#report-canvas.open{right:0}
+#report-canvas-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid rgba(26,42,80,.6);flex-shrink:0}
+#report-canvas-header h2{font-size:15px;font-weight:700;color:#fff}
+#report-canvas-close{background:none;border:none;color:#6688aa;font-size:22px;cursor:pointer;line-height:1;padding:0 4px}
+#report-canvas-close:hover{color:#fff}
+#report-canvas-body{flex:1;overflow-y:auto;padding:20px}
+#report-canvas-body h2{font-size:13px;font-weight:700;color:#5bb8f5;margin:16px 0 8px;padding-bottom:4px;border-bottom:1px solid rgba(26,42,80,.6)}
+#report-canvas-body p{font-size:12.5px;color:#bcc8dc;line-height:1.7;white-space:pre-wrap;margin-bottom:10px}
+#report-canvas-footer{padding:14px 20px;border-top:1px solid rgba(26,42,80,.6);display:flex;gap:10px;flex-shrink:0}
+#report-canvas-export{flex:1;padding:11px;background:linear-gradient(135deg,#1a6fb5,#1e90ff);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer;transition:all .2s}
+#report-canvas-export:hover{background:linear-gradient(135deg,#1e90ff,#5bb8f5)}
+/* Completion celebration */
+.audit-complete-banner{margin:16px 0;padding:20px 22px;background:linear-gradient(135deg,rgba(74,222,128,.12),rgba(16,185,129,.08));border:1px solid rgba(74,222,128,.35);border-radius:14px;text-align:center}
+.audit-complete-banner .congrats-title{font-size:17px;font-weight:700;color:#4ade80;margin-bottom:8px}
+.audit-complete-banner .congrats-sub{font-size:13px;color:#9fb8d4;line-height:1.65;margin-bottom:14px}
+.btn-export-report{display:inline-block;padding:12px 28px;background:linear-gradient(135deg,#1a6fb5,#1e90ff);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;transition:all .2s;box-shadow:0 6px 20px rgba(26,111,181,.4);animation:pulse-cta 2s ease-in-out infinite}
+@keyframes pulse-cta{0%,100%{transform:scale(1);box-shadow:0 6px 20px rgba(26,111,181,.4)}50%{transform:scale(1.03);box-shadow:0 8px 28px rgba(91,184,245,.5)}}
+.btn-export-report:hover{background:linear-gradient(135deg,#1e90ff,#5bb8f5)}
+/* Feedback form */
+#feedback-section{margin:16px 0;padding:20px;background:#0c1830;border:1px solid rgba(26,42,80,.8);border-radius:14px}
+#feedback-section h3{font-size:13px;font-weight:700;color:#5bb8f5;margin-bottom:12px}
+.stars{display:flex;gap:6px;margin-bottom:12px;font-size:26px;cursor:pointer}
+.star{color:#1a2540;transition:color .15s;user-select:none}
+.star.on{color:#fbbf24}
+#feedback-comment{width:100%;background:#0a1428;border:1px solid rgba(26,42,80,.8);border-radius:8px;color:#e0e0e0;padding:10px 14px;font-size:13px;font-family:inherit;resize:none;outline:none;margin-bottom:10px}
+#feedback-comment:focus{border-color:#5bb8f5}
+#feedback-submit{padding:9px 22px;background:#1a6fb5;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;transition:all .2s}
+#feedback-submit:hover{background:#1e90ff}
+#feedback-thanks{color:#4ade80;font-size:13px;display:none;margin-top:8px}
 </style>
 </head>
 <body>
@@ -1975,7 +2176,7 @@ textarea::placeholder{color:#445}
       <p>I'll identify your highest-value automation opportunities through a structured operational audit. We'll classify your operation, run a snapshot audit, synthesize bottlenecks, and build a clear scope.</p>
       <div class="features">
         <span>&#10003; Broker & Lender operations</span>
-        <span>&#10003; Adaptive questioning -- 5-8 per batch</span>
+        <span>&#10003; Adaptive questioning &#8212; one question at a time</span>
         <span>&#10003; Bottleneck identification & ROI ranking</span>
         <span>&#10003; Matched to specific Sprint offerings</span>
         <span>&#10003; 30/60/90 implementation plan</span>
@@ -2008,10 +2209,25 @@ textarea::placeholder{color:#445}
       <button id="intake-submit" onclick="submitIntake()">Continue to Audit &#8594;</button>
     </div>
   </div>
+
+  <div id="report-canvas">
+    <div id="report-canvas-header">
+      <h2>&#128196; Audit Report</h2>
+      <button id="report-canvas-close" onclick="closeReportCanvas()">&#10005;</button>
+    </div>
+    <div id="report-canvas-body"></div>
+    <div id="report-canvas-footer">
+      <button id="report-canvas-export" onclick="exportReport()">&#8595; Download Report</button>
+    </div>
+  </div>
 </div>
 
 </div>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <script>
+// Configure marked
+marked.setOptions({breaks: true, gfm: true});
+
 function showSidePanel(){document.getElementById('side-panel').classList.add('visible');}
 
 function setPill(el,fit){
@@ -2027,6 +2243,18 @@ function renderPipeline(stages){
     row.innerHTML=`<span class="sp-stage-dot"></span><span class="sp-stage-name">${s.label}</span><span class="sp-stage-check">&#10003;</span>`;
     el.appendChild(row);
   });
+}
+
+// Real-time elapsed timer
+let sessionStartTime = null;
+function startElapsedTimer(){
+  sessionStartTime = Date.now();
+  setInterval(()=>{
+    if(!sessionStartTime)return;
+    const elapsed = Math.floor((Date.now() - sessionStartTime) / 60000);
+    const el = document.getElementById('sp-stat-duration');
+    if(el) el.textContent = elapsed + 'm';
+  }, 15000);
 }
 
 function updateSummaryPanel(summary){
@@ -2055,8 +2283,12 @@ function updateSummaryPanel(summary){
 
   renderPipeline(summary.stages);
 
+  // Stats — questions_answered and duration updated from server data
   document.getElementById('sp-stat-questions').textContent=summary.questions_answered||0;
-  document.getElementById('sp-stat-duration').textContent=(summary.duration_min||0)+'m';
+  // Duration: prefer live timer, fallback to server value
+  if(!sessionStartTime){
+    document.getElementById('sp-stat-duration').textContent=(summary.duration_min||0)+'m';
+  }
   document.getElementById('sp-stat-bottlenecks').textContent=summary.bottleneck_count||0;
   document.getElementById('sp-stat-opportunities').textContent=summary.opportunity_count||0;
 
@@ -2066,9 +2298,10 @@ function updateSummaryPanel(summary){
   const bEl=document.getElementById('sp-bottlenecks');
   bEl.innerHTML='';
   if(summary.bottlenecks&&summary.bottlenecks.length){
-    summary.bottlenecks.forEach(b=>{
+    summary.bottlenecks.forEach((b,i)=>{
       const li=document.createElement('li');
       li.textContent=b;
+      if(i===0)li.style.borderLeft='2px solid #5bb8f5';
       bEl.appendChild(li);
     });
   }else{
@@ -2103,7 +2336,10 @@ const msgs=document.getElementById('messages');
 const inp=document.getElementById('msg-input');
 let contactInfo={};
 
-// Item 17: Show intake form
+// Streaming state
+let streamEl=null;
+let streamText='';
+
 function showIntakeForm(){
   document.getElementById('intake-overlay').style.display='flex';
 }
@@ -2113,22 +2349,15 @@ function submitIntake(){
   const email=document.getElementById('intake-email').value.trim();
   const company=document.getElementById('intake-company').value.trim();
   const errEl=document.getElementById('intake-error');
-
   if(!name||!email||!company){
-    errEl.textContent='Please fill in all fields.';
-    errEl.style.display='block';
-    return;
+    errEl.textContent='Please fill in all fields.';errEl.style.display='block';return;
   }
-  // Basic email validation
   if(!email.includes('@')||!email.includes('.')){
-    errEl.textContent='Please enter a valid email address.';
-    errEl.style.display='block';
-    return;
+    errEl.textContent='Please enter a valid email address.';errEl.style.display='block';return;
   }
   errEl.style.display='none';
   contactInfo={name,email,company};
   document.getElementById('intake-overlay').style.display='none';
-  // Seed the dashboard immediately with the info we already know
   document.getElementById('sp-company').textContent=company;
   document.getElementById('sp-contact').textContent=name+(email?' \u00B7 '+email:'');
   showSidePanel();
@@ -2141,65 +2370,102 @@ function connect(){
   ws=new WebSocket(`${proto}//${location.host}/ws/${sid}`);
   ws.onopen=()=>{
     reconnects=0;
-    // Item 6: Send contact info with initial connection
     if(contactInfo.name){
       ws.send(JSON.stringify({type:'intake',name:contactInfo.name,email:contactInfo.email,company:contactInfo.company}));
     }
   };
   ws.onmessage=e=>{
     let d;
-    try{
-      d=JSON.parse(e.data);
-    }catch(err){
-      // Item 3: Proper error handling for bad JSON
-      console.error('Bad JSON from server:',e.data,err);
-      hideTyping();
+    try{d=JSON.parse(e.data);}catch(err){
+      console.error('Bad JSON:',e.data,err);
+      hideTyping();finalizeStream();
       document.getElementById('send-btn').disabled=false;
-      addMsg('bot','Something went wrong processing the response. Please try sending your message again.');
+      addMsg('bot','Something went wrong. Please try again.');return;
+    }
+
+    if(d.type==='chunk'){
+      // Streaming chunk \u2014 accumulate and show
+      streamText+=d.content;
+      if(!streamEl){
+        hideTyping();
+        streamEl=createStreamingEl();
+      }
+      updateStreamingEl(streamEl, streamText);
+      msgs.scrollTop=msgs.scrollHeight;
       return;
     }
-    // Item 2: Always hide typing indicator on any message
+
+    // Final message or error
     hideTyping();
+    finalizeStream();
     document.getElementById('send-btn').disabled=false;
+
     if(d.type==='bot_message'){
       addMsg('bot',d.content,d);
       if(d.stage_label)document.getElementById('badge').textContent=d.stage_label;
-      // Item 10: Progress tied to stage transition
       if(d.progress!==undefined)document.getElementById('progress-fill').style.width=d.progress+'%';
       document.getElementById('info-type').textContent='Type: '+(d.client_type!=='unknown'?d.client_type.toUpperCase():'\u2014');
       document.getElementById('info-snapshot').textContent='Snapshot: '+d.snapshot_count;
       document.getElementById('info-flags').textContent='Flags: '+(d.flags&&d.flags.length?d.flags.join(', '):'none');
       document.getElementById('info-progress').textContent='Progress: '+d.progress+'%';
-      // Item 19: Calendly
       if(d.calendly_url)calendlyUrl=d.calendly_url;
       if(d.show_calendly&&d.calendly_url)showCalendly(d.calendly_url);
-      // Show export once past synthesis
       if(d.progress>=66)document.getElementById('export-btn').style.display='block';
-      // Live 'Summary So Far' side panel
       if(d.summary)updateSummaryPanel(d.summary);
+      // Show completion celebration
+      if(d.stage==='complete'||d.stage==='proposal_ready'){
+        showAuditComplete();
+      }
     }else if(d.type==='error'){
-      // Item 3: Show errors gracefully
       addMsg('bot',d.content||'Something went wrong. Please try again.');
     }
   };
   ws.onclose=()=>{
     if(!started)return;
-    // Item 2: Always hide typing on close
-    hideTyping();
+    hideTyping();finalizeStream();
     reconnects++;
     if(reconnects<=10)setTimeout(connect,3000);
-    else{addMsg('bot','Connection lost. Please refresh the page to continue.');}
+    else{addMsg('bot','Connection lost. Please refresh the page.');}
   };
-  ws.onerror=()=>{
-    hideTyping();
-    ws.close();
-  };
+  ws.onerror=()=>{hideTyping();finalizeStream();ws.close();};
 }
 
-// Parse bot text into [intro, ...mcqBlocks, trailing]. Each mcqBlock = {stem, opts}.
-// Recognizes option lines of form "A) ...", "B) ...", "C) ...", "D) ..." or "1. ..." through "4. ...".
+function createStreamingEl(){
+  const d=document.createElement('div');
+  d.className='msg bot streaming';
+  const lbl=document.createElement('div');
+  lbl.className='msg-label';lbl.textContent='Strat AI';
+  d.appendChild(lbl);
+  const body=document.createElement('div');
+  body.className='stream-body';
+  d.appendChild(body);
+  const cursor=document.createElement('span');
+  cursor.className='stream-cursor';
+  d.appendChild(cursor);
+  msgs.appendChild(d);
+  msgs.scrollTop=msgs.scrollHeight;
+  return d;
+}
+
+function updateStreamingEl(el, text){
+  const body=el.querySelector('.stream-body');
+  if(!body)return;
+  // Render markdown progressively
+  try{
+    body.innerHTML=marked.parse(text,{breaks:true,gfm:true});
+  }catch(e){
+    body.textContent=text;
+  }
+}
+
+function finalizeStream(){
+  if(streamEl){streamEl.remove();streamEl=null;}
+  streamText='';
+}
+
+// Only A-D are treated as MCQ options (NOT 1-4 numbered lists)
 function parseMCQBlocks(text){
-  const optRe=/^\s*([A-Da-d][\)\.]|[1-4]\.)\s+(.+\S)\s*$/;
+  const optRe=/^\s*([A-Da-d][\)\.:])\s+(.+\S)\s*$/;
   const lines=text.split('\n');
   const blocks=[];
   let intro=[],trailing=[],curStem='',curOpts=[],mode='intro',stemBuffer=[];
@@ -2256,179 +2522,246 @@ function renderMCQBlock(stem,opts,container){
   }
   const oc=document.createElement('div');
   oc.className='mcq-options';
+  let selectedOpt=null;
   opts.forEach(opt=>{
-    const btn=document.createElement('button');
-    btn.className='mcq-btn';
-    btn.textContent=opt;
-    btn.onclick=()=>{
-      oc.querySelectorAll('.mcq-btn').forEach(b=>{b.classList.remove('selected');b.disabled=true;});
-      btn.classList.add('selected');
-      btn.disabled=false;
-      inp.value=opt;
-      setTimeout(()=>send(),300);
+    const item=document.createElement('div');
+    item.className='mcq-opt';
+    const raw=opt.trim();
+    const m=raw.match(/^([A-Da-d])[).\s:]\s*(.+)$/);
+    if(m){
+      const lbl=document.createElement('span');
+      lbl.className='mcq-opt-letter';
+      lbl.textContent=m[1].toUpperCase();
+      const txt=document.createElement('span');
+      txt.className='mcq-opt-text';
+      txt.textContent=m[2];
+      item.appendChild(lbl);
+      item.appendChild(txt);
+    }else{
+      const txt=document.createElement('span');
+      txt.className='mcq-opt-text';
+      txt.textContent=raw;
+      item.appendChild(txt);
+    }
+    item.onclick=()=>{
+      oc.querySelectorAll('.mcq-opt').forEach(o=>o.classList.remove('selected'));
+      item.classList.add('selected');
+      selectedOpt=raw;
+      confirmBtn.style.display='flex';
     };
-    oc.appendChild(btn);
+    oc.appendChild(item);
   });
   wrap.appendChild(oc);
-  container.appendChild(wrap);
+  const confirmBtn=document.createElement('button');confirmBtn.className='mcq-confirm';
+  confirmBtn.innerHTML='Submit answer &rarr;';
+  confirmBtn.onclick=()=>{
+    if(!selectedOpt)return;
+    oc.querySelectorAll('.mcq-opt').forEach(o=>o.classList.add('locked'));
+    confirmBtn.disabled=true;confirmBtn.style.display='none';sendDirect(selectedOpt);
+  };
+  wrap.appendChild(confirmBtn);container.appendChild(wrap);
+}
+
+function sendDirect(t){
+  if(!t||!ws||ws.readyState!==1)return;
+  addMsg('user',t);ws.send(JSON.stringify({content:t}));showTyping();
+  document.getElementById('send-btn').disabled=true;
+}
+
+function renderMarkdownContent(text, container){
+  try{
+    const html=marked.parse(text,{breaks:true,gfm:true});
+    const div=document.createElement('div');div.innerHTML=html;container.appendChild(div);
+  }catch(e){
+    const div=document.createElement('div');div.textContent=text;container.appendChild(div);
+  }
 }
 
 function addMsg(role,text,meta){
   const d=document.createElement('div');
   d.className='msg '+role;
-  const lbl=document.createElement('div');
-  lbl.className='msg-label';
+  const lbl=document.createElement('div');lbl.className='msg-label';
   lbl.textContent=role==='bot'?'Strat AI':'You';
   d.appendChild(lbl);
-  // Show question batch progress chip during snapshot audit
   if(role==='bot'&&meta&&meta.stage==='snapshot'){
     const batchNum=(meta.snapshot_batch||0)+1;
-    const chip=document.createElement('div');
-    chip.className='stage-chip';
-    chip.innerHTML=`<span class="chip-dot"></span>Snapshot Audit &mdash; Batch ${batchNum}`;
+    const chip=document.createElement('div');chip.className='stage-chip';
+    chip.innerHTML=`<span class="chip-dot"></span>Snapshot Audit — Batch ${batchNum}`;
     d.appendChild(chip);
   }
-
   if(role==='bot'){
     const p=parseMCQBlocks(text);
     if(p.blocks.length>=1){
-      if(p.intro){
-        const b=document.createElement('div');
-        b.textContent=p.intro;
-        d.appendChild(b);
-      }
-      p.blocks.forEach(blk=>renderMCQBlock(blk.stem,blk.opts,d));
+      if(p.intro){renderMarkdownContent(p.intro,d);}
+      p.blocks.forEach((blk,i)=>{
+        if(i>0){const hr=document.createElement('hr');hr.className='mcq-divider';d.appendChild(hr);}
+        renderMCQBlock(blk.stem,blk.opts,d);
+      });
       if(p.trailing){
-        const b=document.createElement('div');
-        b.style.marginTop='8px';
-        b.textContent=p.trailing;
-        d.appendChild(b);
+        const b=document.createElement('div');b.style.marginTop='10px';
+        renderMarkdownContent(p.trailing,b);d.appendChild(b);
       }
     }else{
-      const b=document.createElement('div');
-      b.textContent=text;
-      d.appendChild(b);
+      renderMarkdownContent(text,d);
     }
   }else{
-    const b=document.createElement('div');
-    b.textContent=text;
-    d.appendChild(b);
+    const b=document.createElement('div');b.textContent=text;d.appendChild(b);
   }
-
-  msgs.appendChild(d);
-  msgs.scrollTop=msgs.scrollHeight;
+  msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
 }
 
-// Item 19: Calendly banner
 function showCalendly(url){
   if(document.getElementById('calendly-banner'))return;
-  const d=document.createElement('div');
-  d.id='calendly-banner';
-  d.className='calendly-banner';
-  d.innerHTML=`<a href="${url}" target="_blank" rel="noopener" onclick="trackCalendly()">Book Your 30-Minute Strategy Call &#8594;</a><p>Speak directly with our team about your audit results</p>`;
-  msgs.appendChild(d);
-  msgs.scrollTop=msgs.scrollHeight;
+  const d=document.createElement('div');d.id='calendly-banner';d.className='calendly-banner';
+  d.innerHTML=`<a href="${url}" target="_blank" rel="noopener" onclick="trackCalendly()">&#128197; Book Your 30-Minute Scoping Call &rarr;</a><p>Click the link above to choose your time directly — no waiting for a callback</p>`;
+  msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
 }
 
 function trackCalendly(){
-  // Item 19: Track Calendly clicks
-  if(ws&&ws.readyState===1){
-    ws.send(JSON.stringify({type:'calendly_click'}));
+  if(ws&&ws.readyState===1){ws.send(JSON.stringify({type:'calendly_click'}));}
+}
+
+let auditCompleteShown=false;
+function showAuditComplete(){
+  if(auditCompleteShown)return;
+  auditCompleteShown=true;
+  setTimeout(()=>{
+    const d=document.createElement('div');d.className='audit-complete-banner';
+    d.innerHTML=`<div class="congrats-title">&#127881; Audit Complete!</div><div class="congrats-sub">Your operational audit is done. We've identified your top bottlenecks and automation opportunities. Download your report now — it has everything you need to save time and money.</div><button class="btn-export-report" onclick="openReportCanvas()">&#128196; View &amp; Export Your Report &rarr;</button>`;
+    msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
+    showFeedbackForm();
+  }, 1200);
+}
+
+// Report canvas
+let reportData=null;
+async function openReportCanvas(){
+  const canvas=document.getElementById('report-canvas');
+  const body=document.getElementById('report-canvas-body');
+  body.innerHTML='<p style="color:#6688aa">Loading your report...</p>';
+  canvas.classList.add('open');
+  if(!reportData){
+    try{
+      const resp=await fetch(`/api/session/${sid}/report`);
+      if(!resp.ok)throw new Error('failed');
+      reportData=await resp.json();
+    }catch(err){
+      body.innerHTML='<p style="color:#f87171">Failed to load report. Please try again.</p>';return;
+    }
   }
+  renderReportCanvas(reportData);
+}
+
+function renderReportCanvas(data){
+  const body=document.getElementById('report-canvas-body');
+  const report=data.report||'';
+  let html=report.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  html=html.replace(/^\s*(?:\d\.\s*)?(CLIENT OVERVIEW|TOP 3 BOTTLENECKS|TOP 3-5 AUTOMATION OPPORTUNITIES|RECOMMENDED ENGAGEMENT|PHASE 1 SCOPE|PHASE 2 OPPORTUNITIES|SUCCESS METRICS|NEXT STEPS)\s*$/gm,'<h2>$1</h2>');
+  html=html.replace(/(https?:\/\/[^\s<"]+)/g,'<a href="$1" target="_blank" rel="noopener" style="color:#5bb8f5;font-weight:600">Book Scoping Call &rarr;</a>');
+  html=html.replace(/\n/g,'<br>');
+  body.innerHTML=`<div style="font-size:12.5px;color:#c4d4e8;line-height:1.75">${html}</div>`;
+}
+
+function closeReportCanvas(){document.getElementById('report-canvas').classList.remove('open');}
+
+function showFeedbackForm(){
+  if(document.getElementById('feedback-section'))return;
+  const sec=document.createElement('div');sec.id='feedback-section';
+  sec.innerHTML=`<h3>How was your audit experience?</h3>
+  <div class="stars" id="star-row">
+    <span class="star" data-v="1">&#9733;</span>
+    <span class="star" data-v="2">&#9733;</span>
+    <span class="star" data-v="3">&#9733;</span>
+    <span class="star" data-v="4">&#9733;</span>
+    <span class="star" data-v="5">&#9733;</span>
+  </div>
+  <textarea id="feedback-comment" rows="3" placeholder="Any comments or suggestions? (optional)"></textarea>
+  <button id="feedback-submit" onclick="submitFeedback()">Submit Feedback</button>
+  <div id="feedback-thanks">Thank you for your feedback!</div>`;
+  msgs.appendChild(sec);msgs.scrollTop=msgs.scrollHeight;
+  let rating=0;
+  const stars=sec.querySelectorAll('.star');
+  stars.forEach(s=>{
+    s.onmouseover=()=>stars.forEach(x=>{x.classList.toggle('on',parseInt(x.dataset.v)<=parseInt(s.dataset.v));});
+    s.onmouseout=()=>stars.forEach(x=>{x.classList.toggle('on',parseInt(x.dataset.v)<=rating);});
+    s.onclick=()=>{rating=parseInt(s.dataset.v);stars.forEach(x=>{x.classList.toggle('on',parseInt(x.dataset.v)<=rating);});};
+  });
+  sec.querySelector('#feedback-submit').addEventListener('click',async()=>{
+    const comment=sec.querySelector('#feedback-comment').value.trim();
+    if(rating===0)return;
+    try{
+      await fetch(`/api/feedback/${sid}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rating,comment})});
+      sec.querySelector('#feedback-thanks').style.display='block';
+      sec.querySelector('#feedback-submit').disabled=true;
+    }catch(e){console.error(e);}
+  });
 }
 
 function showTyping(){
   if(document.getElementById('typing-ind'))return;
-  const d=document.createElement('div');
-  d.id='typing-ind';
-  d.innerHTML='<div id="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div><span>Analyzing...</span></div>';
-  msgs.appendChild(d);
-  msgs.scrollTop=msgs.scrollHeight;
-  // Item 2: Auto-hide typing after 60s safety net
-  setTimeout(()=>{hideTyping();},60000);
+  const d=document.createElement('div');d.id='typing-ind';
+  d.innerHTML='<div id="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div><span>Analyzing…</span></div>';
+  msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
+  // Extended timeout matching server timeout
+  setTimeout(()=>{hideTyping();},120000);
 }
 function hideTyping(){const e=document.getElementById('typing-ind');if(e)e.remove();}
 
 function send(){
   const t=inp.value.trim();
   if(!t||!ws||ws.readyState!==1)return;
-  addMsg('user',t);
-  ws.send(JSON.stringify({content:t}));
-  inp.value='';showTyping();
+  addMsg('user',t);ws.send(JSON.stringify({content:t}));inp.value='';showTyping();
   document.getElementById('send-btn').disabled=true;
 }
 
-// Item 5 + 16: Export structured report from server
+// Export report — uses cached reportData if available
 async function exportReport(){
+  if(!reportData){
+    const btn=document.getElementById('export-btn');
+    const prevText=btn.textContent;
+    btn.textContent='Fetching...';btn.disabled=true;
+    try{
+      const r=await fetch(`/api/session/${sid}/report`);
+      if(!r.ok)throw new Error('failed');
+      reportData=await r.json();
+    }catch(e){addMsg('bot','Could not fetch report. Try again.');btn.textContent=prevText;btn.disabled=false;return;}
+    finally{btn.disabled=false;}
+  }
   const btn=document.getElementById('export-btn');
-  btn.textContent='Generating...';
-  btn.disabled=true;
+  const prevText=btn.textContent;
+  btn.textContent='Building...';btn.disabled=true;
   try{
-    const resp=await fetch(`/api/session/${sid}/report`);
-    if(!resp.ok)throw new Error('Report generation failed');
-    const data=await resp.json();
+    const data=reportData;
     const report=data.report||'Report generation failed.';
     const contact=data.contact||{};
     const date=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
 
-    const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    let fmtd=esc(report.trim());
-    // Convert section headers (locked 8-section order, optional leading "N. ")
-    fmtd=fmtd.replace(/^\s*(?:\d\.\s*)?(CLIENT OVERVIEW|TOP 3 BOTTLENECKS|TOP 3-5 AUTOMATION OPPORTUNITIES|RECOMMENDED ENGAGEMENT|PHASE 1 SCOPE|PROPOSED PHASE 1 SCOPE|PHASE 2 OPPORTUNITIES|SUCCESS METRICS|NEXT STEPS|NEXT STEP)\s*$/gm,'</div><h2>$1</h2><div class="section">');
-    // Make URLs in the NEXT STEPS section clickable hyperlinks
-    fmtd=fmtd.replace(/(https?:\/\/[^\s<"]+)/g,'<a href="$1" target="_blank" rel="noopener" style="color:#1a6fb5;font-weight:600;text-decoration:underline">Schedule a Discovery Call &rarr;</a>');
+    const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const md=typeof marked!=='undefined'?marked.parse(report):`<pre>${esc(report)}</pre>`;
 
-    const html=`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Strat AI Solutions \u2014 Audit & Scoping Report</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#1a1a1a;max-width:900px;margin:0 auto;padding:48px 40px}
-.doc-header{display:flex;align-items:center;gap:18px;padding-bottom:28px;border-bottom:3px solid #1a6fb5;margin-bottom:40px}
-.doc-logo{width:54px;height:54px;background:linear-gradient(135deg,#0a4a7a,#1e90ff);border-radius:13px;flex-shrink:0;background-image:url('${location.origin}/static/logo.jpg');background-size:contain;background-repeat:no-repeat;background-position:center}
-.doc-title{font-size:26px;font-weight:700;color:#0a1e3d;letter-spacing:-.4px}
-.doc-badge{display:inline-block;background:#0a2a4a;color:#5bb8f5;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:20px;margin-left:10px;vertical-align:middle}
-.doc-sub{font-size:13px;color:#888;margin-top:5px}
-.section{line-height:1.78;font-size:14px;color:#333;white-space:pre-wrap;margin-bottom:12px}
-h2{font-size:17px;font-weight:700;color:#0a4a7a;margin:32px 0 10px;padding-bottom:7px;border-bottom:1px solid #e5e7eb}
-h3{font-size:14px;font-weight:600;color:#1a6fb5;margin:18px 0 6px}
-strong{color:#1a1a1a;font-weight:600}
-.doc-footer{margin-top:56px;padding-top:20px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;font-size:12px;color:#aaa}
-@media print{body{padding:20px}@page{margin:.75in}}
-</style>
-</head>
-<body>
-  <div class="doc-header">
-    <div class="doc-logo" aria-label="Strat AI"></div>
-    <div>
-      <div class="doc-title">Strat AI Solutions<span class="doc-badge">Confidential</span></div>
-      <div class="doc-sub">Audit &amp; Scoping Report \u2014 ${date}${contact.company?' \u2014 '+esc(contact.company):''}</div>
-    </div>
-  </div>
-  <div class="section">${fmtd}</div>
-  <div class="doc-footer">
-    <span>&copy; ${new Date().getFullYear()} Strat AI Solutions \u2014 Confidential. Not for distribution.</span>
-    <span>Generated ${new Date().toLocaleString()}</span>
-  </div>
-</body>
-</html>`;
+    const coName=contact.company?'-'+contact.company.replace(/\s+/g,'-').toLowerCase():'';
+    const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Strat AI Report${contact.company?' - '+esc(contact.company):''}</title>
+<style>body{font-family:Inter,sans-serif;background:#fff;color:#1a1a1a;max-width:860px;margin:0 auto;padding:40px}h1{color:#0a4a7a;border-bottom:2px solid #1a6fb5;padding-bottom:8px}h2{color:#0a4a7a;margin-top:28px}p,li{line-height:1.7}footer{margin-top:48px;color:#aaa;font-size:12px;border-top:1px solid #eee;padding-top:12px}@media print{body{padding:20px}}</style>
+</head><body>
+<h1>Strat AI Solutions &mdash; Audit Report</h1>
+<p style="color:#888;font-size:13px">${date}${contact.company?' &mdash; '+esc(contact.company):''}</p>
+<div id="body">${md}</div>
+<footer>&copy; ${new Date().getFullYear()} Strat AI Solutions &mdash; Confidential</footer>
+</body></html>`;
     const blob=new Blob([html],{type:'text/html'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url;a.download=`strat-ai-audit-report${contact.company?'-'+contact.company.replace(/\s+/g,'-').toLowerCase():''}.html`;a.click();
+    a.href=url;a.download=`strat-ai-report${coName}.html`;a.click();
     URL.revokeObjectURL(url);
   }catch(err){
     console.error('Export error:',err);
     addMsg('bot','Report export encountered an error. Please try again.');
   }finally{
-    btn.textContent='\u2193 Export Report';
+    btn.textContent=prevText;
     btn.disabled=false;
   }
 }
 
-// Item 6: Fix start audit — reliable initialization
 function startAudit(){
   started=true;
   const welcome=document.getElementById('welcome');
@@ -2436,9 +2769,8 @@ function startAudit(){
   document.getElementById('input-area').style.display='flex';
   document.getElementById('info-bar').style.display='flex';
   document.getElementById('export-btn').style.display='block';
-  showTyping();
-  // Connect WebSocket — the onopen handler sends the initial message
-  connect();
+  startElapsedTimer();
+  showTyping();connect();
 }
 
 document.getElementById('msg-input').addEventListener('keydown',e=>{
@@ -2453,160 +2785,371 @@ document.getElementById('msg-input').addEventListener('keydown',e=>{
 # ADMIN DASHBOARD (Item 20)
 # ===================================================================
 
-ADMIN_HTML = r"""<!DOCTYPE html>
+ADMIN_HTML = r"""
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Strat AI — Admin Dashboard</title>
+<title>Strat AI &#8212; Admin Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:#060b18;color:#e0e0e0;padding:24px}
-h1{font-size:22px;color:#fff;margin-bottom:6px}
-.subtitle{color:#6688aa;font-size:13px;margin-bottom:24px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px}
-.stat-card{background:#0f1830;border:1px solid #1a2a50;border-radius:12px;padding:16px;text-align:center}
-.stat-card .num{font-size:28px;font-weight:700;color:#5bb8f5}
-.stat-card .label{font-size:11px;color:#6688aa;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;background:#0f1830;border-radius:12px;overflow:hidden;border:1px solid #1a2a50;min-width:960px}
-th{background:#0a1e3d;color:#5bb8f5;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:12px;text-align:left;font-weight:600;white-space:nowrap}
-td{padding:10px 12px;font-size:13px;border-top:1px solid #1a2540;color:#bbb;vertical-align:top}
-tr:hover td{background:#0a1e3d}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
-.badge-good{background:#052e16;color:#4ade80}
-.badge-moderate{background:#422006;color:#fbbf24}
-.badge-poor{background:#450a0a;color:#f87171}
-.badge-unknown{background:#1a2540;color:#6688aa}
-.audit-pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;background:rgba(91,184,245,.12);color:#5bb8f5;border:1px solid rgba(91,184,245,.25)}
-.hot{animation:hotglow 1.5s ease-in-out infinite alternate}
-@keyframes hotglow{from{box-shadow:0 0 4px #4ade80}to{box-shadow:0 0 12px #4ade80}}
-#login{display:flex;flex-direction:column;align-items:center;justify-content:center;height:80vh;gap:12px}
-#login input{padding:11px 14px;background:#0f1830;border:1px solid #1a2a50;border-radius:8px;color:#e0e0e0;font-size:14px;width:260px;outline:none;font-family:inherit}
-#login button{padding:11px 32px;background:#1a6fb5;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px}
-.error{color:#f87171;font-size:13px}
-#dashboard{display:none}
-.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}
-.refresh-btn{padding:6px 14px;background:#1a6fb5;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit}
-.last-updated{font-size:11px;color:#445a7a}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:#060b18;color:#e0e0e0;min-height:100vh}
+#login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px}
+.logo-text{font-size:20px;font-weight:700;color:#5bb8f5;letter-spacing:-.5px;margin-bottom:4px}
+#login-screen input{padding:11px 16px;background:#0f1830;border:1px solid #1a2a50;border-radius:8px;color:#e0e0e0;font-size:14px;width:280px;outline:none;font-family:inherit;transition:border .15s}
+#login-screen input:focus{border-color:#5bb8f5}
+.login-btn{padding:11px 0;background:linear-gradient(135deg,#0a2a5a,#1a6fb5);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;width:280px;transition:opacity .15s}
+.login-btn:hover{opacity:.85}
+.lerr{color:#f87171;font-size:13px;min-height:18px}
+#dashboard{display:none;min-height:100vh}
+.dash-hdr{display:flex;align-items:center;justify-content:space-between;padding:16px 26px;border-bottom:1px solid #1a2a50;background:#060b18;position:sticky;top:0;z-index:20}
+.dash-hdr h1{font-size:16px;font-weight:700;color:#fff}
+.hdr-sub{font-size:11px;color:#6688aa;margin-top:2px}
+.hdr-right{display:flex;align-items:center;gap:10px}
+.btn{padding:7px 15px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.btn:hover{opacity:.8}
+.btn-blue{background:#1a6fb5;color:#fff}
+.btn-ghost{background:#0f1830;color:#8ba0c0;border:1px solid #1a2a50}
+.lu{font-size:11px;color:#3a5070}
+.body{padding:22px 26px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
+.kpi{background:#0f1830;border:1px solid #1a2a50;border-radius:11px;padding:16px;text-align:center;transition:border-color .2s}
+.kpi:hover{border-color:#2a4a80}
+.kn{font-size:26px;font-weight:700;line-height:1;margin-bottom:5px}
+.kn.blue{color:#5bb8f5}.kn.green{color:#4ade80}.kn.yellow{color:#fbbf24}
+.kl{font-size:10px;color:#6688aa;text-transform:uppercase;letter-spacing:.5px}
+.ks{font-size:11px;color:#3a5070;margin-top:3px}
+.charts-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:13px;margin-bottom:22px}
+.chart-card{background:#0f1830;border:1px solid #1a2a50;border-radius:11px;padding:15px}
+.ct{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#6688aa;margin-bottom:11px}
+.br{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.bl{font-size:10px;color:#6688aa;width:72px;text-align:right;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bt{flex:1;background:#0a1428;border-radius:3px;height:15px;overflow:hidden}
+.bf{height:100%;border-radius:3px;display:flex;align-items:center;padding-left:4px;transition:width .5s ease}
+.bf span{font-size:9px;font-weight:700;color:rgba(255,255,255,.8);white-space:nowrap}
+.bc{font-size:10px;color:#5bb8f5;width:26px;text-align:right;flex-shrink:0}
+.filters{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin-bottom:13px}
+.filters input[type=search]{padding:7px 12px;background:#0f1830;border:1px solid #1a2a50;border-radius:7px;color:#e0e0e0;font-size:13px;width:230px;outline:none;font-family:inherit;transition:border .15s}
+.filters input[type=search]:focus{border-color:#5bb8f5}
+.fg{display:flex;gap:4px;flex-wrap:wrap}
+.fb{padding:5px 11px;border-radius:18px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid #1a2a50;background:#0a1428;color:#6688aa;transition:all .15s}
+.fb.on{background:#1a3a6a;color:#5bb8f5;border-color:#2a5a9a}
+.fb:hover:not(.on){background:#0f1e38;color:#aac}
+.tw{overflow-x:auto;border-radius:11px;border:1px solid #1a2a50}
+table{width:100%;border-collapse:collapse;background:#0f1830;min-width:960px}
+th{background:#0a1e3d;color:#5bb8f5;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:11px 13px;text-align:left;font-weight:700;white-space:nowrap}
+td{padding:9px 13px;font-size:13px;border-top:1px solid #1a2540;color:#bbb;vertical-align:middle}
+tr:hover td{background:#0a1e3d;cursor:pointer}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+.bg{background:#052e16;color:#4ade80}
+.bm{background:#422006;color:#fbbf24}
+.bp{background:#450a0a;color:#f87171}
+.bu{background:#1a2540;color:#6688aa}
+.bb{background:#0a2a50;color:#5bb8f5}
+.bl2{background:#1a1050;color:#a78bfa}
+.bhy{background:#0a2020;color:#34d399}
+.ap{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;background:rgba(91,184,245,.12);color:#5bb8f5;border:1px solid rgba(91,184,245,.25)}
+.hot{animation:hg 1.6s ease-in-out infinite alternate}
+@keyframes hg{from{box-shadow:0 0 3px rgba(74,222,128,.2)}to{box-shadow:0 0 9px rgba(74,222,128,.4)}}
+.empty{text-align:center;padding:36px;color:#334466;font-size:14px}
+.trunc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;display:block}
+#modal{position:fixed;inset:0;z-index:100;display:none}
+#modal.open{display:flex;align-items:flex-start;justify-content:flex-end}
+.mo{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(2px)}
+.mp{position:relative;z-index:1;background:#080e1e;border-left:1px solid #1a2a50;width:600px;max-width:97vw;height:100vh;overflow-y:auto;display:flex;flex-direction:column;animation:sldin .22s ease}
+@keyframes sldin{from{transform:translateX(40px);opacity:0}to{transform:none;opacity:1}}
+.mh{position:sticky;top:0;background:#080e1e;border-bottom:1px solid #1a2a50;padding:15px 20px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;z-index:2}
+.mhi h2{font-size:15px;font-weight:700;color:#fff;margin-bottom:4px}
+.mhi .mmeta{font-size:12px;color:#6688aa;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.mcl{background:none;border:1px solid #1a2a50;color:#8ba0c0;border-radius:6px;padding:3px 9px;cursor:pointer;font-size:15px;line-height:1;transition:all .15s;flex-shrink:0;margin-top:1px}
+.mcl:hover{background:#1a2a50;color:#fff}
+.mb{padding:18px 20px;flex:1}
+.ms{margin-bottom:20px}
+.mst{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#5bb8f5;margin-bottom:9px;padding-bottom:5px;border-bottom:1px solid #1a2a50;display:flex;align-items:center;justify-content:space-between}
+.ig{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ii label{font-size:10px;text-transform:uppercase;color:#3a5070;letter-spacing:.4px;display:block;margin-bottom:2px}
+.ii span{font-size:13px;color:#ccc}
+.sy{background:#0a1428;border:1px solid #1a2a50;border-radius:7px;padding:12px;font-size:13px;line-height:1.65;color:#b8c4d8;white-space:pre-wrap;max-height:280px;overflow-y:auto}
+.qa{margin-bottom:9px;padding:9px 11px;background:#0a1428;border-radius:6px;border-left:2px solid #1a4a8a}
+.qq{font-size:10px;color:#5bb8f5;margin-bottom:3px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+.qa-a{font-size:13px;color:#b8c4d8;line-height:1.5}
+.ftag{display:inline-block;padding:3px 10px;background:#1a2540;border-radius:11px;font-size:11px;color:#8ba0c0;margin:2px}
+.rep{background:#050b1a;border:1px solid #1a3a6a;border-radius:7px;padding:14px;font-size:12px;line-height:1.75;color:#c8d4e8;white-space:pre-wrap;max-height:480px;overflow-y:auto;font-family:'Courier New',monospace}
+.mf{position:sticky;bottom:0;background:#080e1e;border-top:1px solid #1a2a50;padding:12px 20px;display:flex;gap:8px;flex-wrap:wrap}
+.cb{background:none;border:none;color:#5bb8f5;font-size:10px;cursor:pointer;text-decoration:underline;font-family:inherit;margin-left:6px}
+@media(max-width:700px){.body{padding:14px}.kpi-grid{grid-template-columns:repeat(2,1fr)}.charts-row{grid-template-columns:1fr}.mp{width:100vw}}
 </style>
 </head>
 <body>
-<div id="login">
-  <h1>Strat AI Admin</h1>
+
+<div id="login-screen">
+  <div class="logo-text">Strat AI Solutions</div>
+  <p style="font-size:13px;color:#6688aa;margin-bottom:6px">Admin Dashboard</p>
   <input type="password" id="pw" placeholder="Admin password" onkeydown="if(event.key==='Enter')login()">
-  <button onclick="login()">Login</button>
-  <div class="error" id="login-error"></div>
+  <button class="login-btn" onclick="login()">Login</button>
+  <div class="lerr" id="lerr"></div>
 </div>
+
 <div id="dashboard">
-  <h1>Strat AI Solutions &mdash; Admin Dashboard</h1>
-  <div class="subtitle">Session overview and lead management</div>
-  <div class="toolbar">
-    <button class="refresh-btn" onclick="loadData()">Refresh</button>
-    <span class="last-updated" id="last-updated"></span>
+  <div class="dash-hdr">
+    <div>
+      <h1>Strat AI Solutions &mdash; Admin Dashboard</h1>
+      <div class="hdr-sub">Audit sessions, leads &amp; performance KPIs</div>
+    </div>
+    <div class="hdr-right">
+      <span class="lu" id="lu"></span>
+      <button class="btn btn-blue" onclick="loadData()">&#8635; Refresh</button>
+      <button class="btn btn-ghost" onclick="logout()">Logout</button>
+    </div>
   </div>
-  <div class="stats" id="stats"></div>
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>Login Time</th>
-        <th>Company</th>
-        <th>Contact</th>
-        <th>Client Type</th>
-        <th>Fit</th>
-        <th>Current Stage</th>
-        <th>Top Bottleneck</th>
-        <th>API Cost</th>
-        <th>Call Booked</th>
-        <th>Audits</th>
-      </tr>
-    </thead>
-    <tbody id="tbody"></tbody>
-  </table>
+
+  <div class="body">
+    <div class="kpi-grid" id="kpi-grid"></div>
+    <div class="charts-row" id="charts-row"></div>
+
+    <div class="filters">
+      <input type="search" id="srch" placeholder="Search company, contact, email&hellip;" oninput="renderTable()">
+      <div class="fg">
+        <button class="fb on" data-v="" onclick="setF('fit',this)">All Fit</button>
+        <button class="fb" data-v="good" onclick="setF('fit',this)">Good</button>
+        <button class="fb" data-v="moderate" onclick="setF('fit',this)">Moderate</button>
+        <button class="fb" data-v="poor" onclick="setF('fit',this)">Poor</button>
+      </div>
+      <div class="fg">
+        <button class="fb on" data-v="" onclick="setF('type',this)">All Types</button>
+        <button class="fb" data-v="broker" onclick="setF('type',this)">Broker</button>
+        <button class="fb" data-v="lender" onclick="setF('type',this)">Lender</button>
+        <button class="fb" data-v="hybrid" onclick="setF('type',this)">Hybrid</button>
+      </div>
+    </div>
+
+    <div class="tw">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th><th>Company</th><th>Contact</th><th>Type</th><th>Fit</th>
+            <th>Stage</th><th>Top Bottleneck</th><th>API Cost</th><th>Calendly</th><th>Audits</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
+
+<div id="modal">
+  <div class="mo" onclick="closeModal()"></div>
+  <div class="mp">
+    <div class="mh" id="mh"></div>
+    <div class="mb" id="mb"></div>
+    <div class="mf" id="mf"></div>
+  </div>
+</div>
+
 <script>
-let token='';
-function fmtDate(str){
-  if(!str)return'\u2014';
-  const d=new Date(str);
-  if(isNaN(d.getTime()))return String(str);
-  return d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-}
+let token='',allSessions=[],activeF={fit:'',type:''};
+const SL={'intake':'Getting Started','classify':'Classification','qualify':'Qualification','snapshot':'Snapshot Audit','synthesis':'Synthesis','deep_audit':'Deep Audit','proposal_ready':'Proposal Ready','complete':'Complete'};
+const SO=['intake','classify','qualify','snapshot','synthesis','deep_audit','proposal_ready','complete'];
+const TL={'broker':'Broker','lender':'Lender','hybrid':'Hybrid','unknown':'—'};
+const FL={'good':'Good','moderate':'Moderate','poor':'Poor','unknown':'—'};
+const TC={'broker':'bb','lender':'bl2','hybrid':'bhy','unknown':'bu'};
+const FC={'good':'bg','moderate':'bm','poor':'bp','unknown':'bu'};
+
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtDate(s){if(!s)return'—';const d=new Date(s);if(isNaN(d))return String(s);return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});}
+function fmtShort(s){if(!s)return'—';const d=new Date(s);if(isNaN(d))return String(s);return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'2-digit'});}
+
 async function login(){
   const pw=document.getElementById('pw').value;
   try{
     const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
     const d=await r.json();
-    if(d.ok){
-      token=d.token;
-      document.getElementById('login').style.display='none';
-      document.getElementById('dashboard').style.display='block';
-      loadData();
-    }else{
-      document.getElementById('login-error').textContent='Wrong password';
-    }
-  }catch(e){document.getElementById('login-error').textContent='Connection error';}
+    if(d.ok){token=d.token;document.getElementById('login-screen').style.display='none';document.getElementById('dashboard').style.display='block';loadData();}
+    else document.getElementById('lerr').textContent='Incorrect password';
+  }catch(e){document.getElementById('lerr').textContent='Connection error';}
 }
+function logout(){token='';allSessions=[];document.getElementById('dashboard').style.display='none';document.getElementById('login-screen').style.display='flex';document.getElementById('pw').value='';}
+
 async function loadData(){
   try{
     const r=await fetch('/admin/api/sessions',{headers:{'Authorization':'Bearer '+token}});
+    if(!r.ok){if(r.status===401)logout();return;}
     const d=await r.json();
-    const sessions=d.sessions||[];
-
-    // Stats
-    const total=sessions.length;
-    const completed=sessions.filter(s=>s.stage==='complete'||s.stage==='proposal_ready').length;
-    const goodFit=sessions.filter(s=>s.fit==='good').length;
-    const callsBooked=sessions.filter(s=>s.calendly_clicked).length;
-    const totalCost=sessions.reduce((a,s)=>a+(s.api_cost_usd||0),0);
-    document.getElementById('stats').innerHTML=`
-      <div class="stat-card"><div class="num">${total}</div><div class="label">Total Sessions</div></div>
-      <div class="stat-card"><div class="num">${completed}</div><div class="label">Completed</div></div>
-      <div class="stat-card"><div class="num">${goodFit}</div><div class="label">Good Fit</div></div>
-      <div class="stat-card"><div class="num">${callsBooked}</div><div class="label">Calls Booked</div></div>
-      <div class="stat-card"><div class="num">$${totalCost.toFixed(2)}</div><div class="label">Total API Cost</div></div>
-    `;
-    document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString();
-
-    // Table
-    const tbody=document.getElementById('tbody');
-    tbody.innerHTML='';
-    sessions.sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
-    const STAGE_LABELS={
-      'intake':'Getting Started','classify':'Classification','qualify':'Qualification',
-      'snapshot':'Snapshot Audit','synthesis':'Synthesis','deep_audit':'Deep Audit',
-      'proposal_ready':'Proposal Ready','complete':'Complete'
-    };
-    const TYPE_LABELS={'broker':'Broker','lender':'Lender','hybrid':'Hybrid','unknown':'\u2014'};
-    const FIT_LABELS={'good':'Good','moderate':'Moderate','poor':'Poor','unknown':'\u2014'};
-    sessions.forEach(s=>{
-      const fit=s.fit||'unknown';
-      const isHot=fit==='good';
-      const tr=document.createElement('tr');
-      if(isHot)tr.className='hot';
-      const audits=s.user_audit_count||1;
-      tr.innerHTML=`
-        <td style="white-space:nowrap">${fmtDate(s.created_at)}</td>
-        <td>${esc(s.company_name||'\u2014')}</td>
-        <td>${esc(s.contact_name||'\u2014')}<br><small style="color:#6688aa">${esc(s.contact_email||'')}</small></td>
-        <td>${TYPE_LABELS[s.client_type||'unknown']||'\u2014'}</td>
-        <td><span class="badge badge-${fit}">${FIT_LABELS[fit]||'\u2014'}</span></td>
-        <td>${STAGE_LABELS[s.stage]||esc(s.stage||'\u2014')}</td>
-        <td style="max-width:180px;word-break:break-word">${s.flags&&s.flags.length?esc(s.flags[0]):'\u2014'}</td>
-        <td>$${(s.api_cost_usd||0).toFixed(2)}</td>
-        <td>${s.calendly_clicked?'<span style="color:#4ade80;font-weight:600">Yes</span>':'No'}</td>
-        <td><span class="audit-pill">${audits}</span></td>
-      `;
-      tbody.appendChild(tr);
-    });
+    allSessions=(d.sessions||[]).sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+    document.getElementById('lu').textContent='Updated '+new Date().toLocaleTimeString();
+    renderKPIs();renderCharts();renderTable();
   }catch(e){console.error(e);}
 }
-function esc(s){if(!s)return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function renderKPIs(){
+  const s=allSessions,n=s.length;
+  const done=s.filter(x=>x.stage==='complete'||x.stage==='proposal_ready').length;
+  const good=s.filter(x=>x.fit==='good').length;
+  const mod=s.filter(x=>x.fit==='moderate').length;
+  const cal=s.filter(x=>x.calendly_clicked).length;
+  const cost=s.reduce((a,x)=>a+(x.api_cost_usd||0),0);
+  const avg=n?cost/n:0;
+  const cr=n?Math.round(done/n*100):0;
+  const cv=n?Math.round(good/n*100):0;
+  document.getElementById('kpi-grid').innerHTML=[
+    {n:n,l:'Total Sessions',s:'All time',c:'blue'},
+    {n:done,l:'Completed Audits',s:cr+'% completion rate',c:done?'green':'blue'},
+    {n:good,l:'Good Fit Leads',s:cv+'% of sessions',c:good?'green':'blue'},
+    {n:mod,l:'Moderate Fit',s:(n?Math.round(mod/n*100):0)+'% of sessions',c:mod?'yellow':'blue'},
+    {n:cal,l:'Calendly Clicks',s:(n?Math.round(cal/n*100):0)+'% click rate',c:cal?'green':'blue'},
+    {n:'$'+cost.toFixed(2),l:'Total API Cost',s:'$'+avg.toFixed(3)+' avg/session',c:'blue'},
+  ].map(k=>`<div class="kpi"><div class="kn ${k.c}">${k.n}</div><div class="kl">${k.l}</div><div class="ks">${k.s}</div></div>`).join('');
+}
+
+function mkBar(label,count,total,color){
+  const p=total?Math.round(count/total*100):0;
+  return `<div class="br"><div class="bl">${label}</div><div class="bt"><div class="bf" style="width:${p}%;background:${color}"><span>${p}%</span></div></div><div class="bc">${count}</div></div>`;
+}
+
+function renderCharts(){
+  const s=allSessions,n=s.length||1;
+  const fc={good:0,moderate:0,poor:0,unknown:0};s.forEach(x=>{fc[x.fit||'unknown']=(fc[x.fit||'unknown']||0)+1;});
+  const tc={broker:0,lender:0,hybrid:0,unknown:0};s.forEach(x=>{tc[x.client_type||'unknown']=(tc[x.client_type||'unknown']||0)+1;});
+  const sf=['classify','qualify','snapshot','synthesis','deep_audit','proposal_ready','complete'];
+  const sl2={'classify':'Classify','qualify':'Qualify','snapshot':'Snapshot','synthesis':'Synthesis','deep_audit':'Deep Audit','proposal_ready':'Proposal','complete':'Complete'};
+  const sc={};sf.forEach(st=>{const idx=SO.indexOf(st);sc[st]=s.filter(x=>SO.indexOf(x.stage||'intake')>=idx).length;});
+  const mx=Math.max(...Object.values(sc),1);
+  document.getElementById('charts-row').innerHTML=
+    `<div class="chart-card"><div class="ct">Fit Distribution</div>${mkBar('Good',fc.good,n,'#4ade80')}${mkBar('Moderate',fc.moderate,n,'#fbbf24')}${mkBar('Poor',fc.poor,n,'#f87171')}${mkBar('Unknown',fc.unknown,n,'#2a3a5a')}</div>`+
+    `<div class="chart-card"><div class="ct">Client Type</div>${mkBar('Broker',tc.broker,n,'#5bb8f5')}${mkBar('Lender',tc.lender,n,'#a78bfa')}${mkBar('Hybrid',tc.hybrid,n,'#34d399')}${mkBar('Unknown',tc.unknown,n,'#2a3a5a')}</div>`+
+    `<div class="chart-card"><div class="ct">Stage Funnel</div>${sf.map(st=>`<div class="br"><div class="bl" style="font-size:10px;width:68px">${sl2[st]}</div><div class="bt"><div class="bf" style="width:${Math.round(sc[st]/mx*100)}%;background:#1a6fb5"><span>${Math.round(sc[st]/(allSessions.length||1)*100)}%</span></div></div><div class="bc">${sc[st]}</div></div>`).join('')}</div>`;
+}
+
+function setF(key,btn){btn.closest('.fg').querySelectorAll('.fb').forEach(b=>b.classList.remove('on'));btn.classList.add('on');activeF[key]=btn.dataset.v;renderTable();}
+
+function getFiltered(){
+  const q=(document.getElementById('srch').value||'').toLowerCase().trim();
+  return allSessions.filter(s=>{
+    if(activeF.fit&&s.fit!==activeF.fit)return false;
+    if(activeF.type&&s.client_type!==activeF.type)return false;
+    if(q&&![s.company_name,s.contact_name,s.contact_email,s.id].join(' ').toLowerCase().includes(q))return false;
+    return true;
+  });
+}
+
+function renderTable(){
+  const rows=getFiltered();
+  const tb=document.getElementById('tbody');
+  if(!rows.length){tb.innerHTML='<tr><td colspan="11" class="empty">No sessions match the current filters.</td></tr>';return;}
+  tb.innerHTML=rows.map(s=>{
+    const fit=s.fit||'unknown',type=s.client_type||'unknown',audits=s.user_audit_count||1;
+    return `<tr class="${fit==='good'?'hot':''}" onclick="openModal('${esc(s.id)}')">
+      <td style="font-size:12px;white-space:nowrap">${fmtShort(s.created_at)}</td>
+      <td><span class="trunc" title="${esc(s.company_name)}">${esc(s.company_name||'—')}</span></td>
+      <td>${esc(s.contact_name||'—')}<div style="font-size:11px;color:#4a6080">${esc(s.contact_email||'')}</div></td>
+      <td><span class="badge ${TC[type]||'bu'}">${TL[type]||type}</span></td>
+      <td><span class="badge ${FC[fit]||'bu'}">${FL[fit]||fit}</span></td>
+      <td style="font-size:12px">${SL[s.stage]||s.stage||'—'}</td>
+      <td><span class="trunc" style="font-size:12px" title="${esc(s.top_bottleneck)}">${esc(s.top_bottleneck||'—')}</span></td>
+      <td style="font-size:12px">$${(s.api_cost_usd||0).toFixed(3)}</td>
+      <td style="font-size:12px">${s.calendly_clicked?'<span style="color:#4ade80;font-weight:700">✓</span>':'—'}</td>
+      <td><span class="ap">${audits}</span></td>
+      <td onclick="event.stopPropagation()"><button onclick="dlTx('${esc(s.id)}')" style="padding:3px 8px;background:#0a1e3d;color:#5bb8f5;border:1px solid #1a3a6a;border-radius:5px;font-size:11px;cursor:pointer">Transcript</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function openModal(sid){
+  document.getElementById('modal').classList.add('open');
+  document.getElementById('mh').innerHTML='<div class="mhi"><h2>Loading…</h2></div><button class="mcl" onclick="closeModal()">✕</button>';
+  document.getElementById('mb').innerHTML='<div style="padding:30px;text-align:center;color:#334466">Loading session data…</div>';
+  document.getElementById('mf').innerHTML='';
+  try{
+    const r=await fetch('/admin/api/session/'+sid,{headers:{'Authorization':'Bearer '+token}});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    renderModal(await r.json());
+  }catch(e){document.getElementById('mb').innerHTML='<div style="padding:20px;color:#f87171">Failed to load: '+esc(e.message)+'</div>';}
+}
+
+function renderModal(s){
+  const fit=s.fit||'unknown',type=s.client_type||'unknown';
+  document.getElementById('mh').innerHTML=`
+    <div class="mhi">
+      <h2>${esc(s.company_name||'Unknown Company')}</h2>
+      <div class="mmeta">
+        ${esc(s.contact_name||'')}${s.contact_email?' · <span style="color:#4a6080">'+esc(s.contact_email)+'</span>':''}
+        <span class="badge ${FC[fit]||'bu'}">${FL[fit]}</span>
+        <span class="badge ${TC[type]||'bu'}">${TL[type]}</span>
+      </div>
+    </div>
+    <button class="mcl" onclick="closeModal()">✕</button>`;
+
+  let b='';
+  b+=`<div class="ms"><div class="mst">Session Info</div><div class="ig">
+    <div class="ii"><label>Started</label><span>${fmtDate(s.created_at)}</span></div>
+    <div class="ii"><label>Completed</label><span>${s.completed_at?fmtDate(s.completed_at):'—'}</span></div>
+    <div class="ii"><label>Stage</label><span>${SL[s.stage]||s.stage||'—'}</span></div>
+    <div class="ii"><label>Fit</label><span><span class="badge ${FC[fit]||'bu'}">${FL[fit]}</span></span></div>
+    <div class="ii"><label>API Calls</label><span>${s.api_calls||0}</span></div>
+    <div class="ii"><label>API Cost</label><span>$${(s.api_cost_usd||0).toFixed(4)}</span></div>
+    <div class="ii"><label>Calendly Clicked</label><span>${s.calendly_clicked?'Yes':'No'}</span></div>
+    <div class="ii"><label>Session ID</label><span style="font-size:10px;color:#334466">${esc(s.id||'')}</span></div>
+  </div></div>`;
+
+  if(s.flags&&s.flags.length){
+    b+=`<div class="ms"><div class="mst">Flags</div><div>${s.flags.map(f=>`<span class="ftag">${esc(f)}</span>`).join('')}</div></div>`;
+  }
+  if(s.synthesis_text){
+    b+=`<div class="ms"><div class="mst">Synthesis Summary</div><div class="sy">${esc(s.synthesis_text)}</div></div>`;
+  }
+
+  function qaSection(title,data){
+    const keys=Object.keys(data||{});
+    if(!keys.length)return'';
+    const id='sc'+Math.random().toString(36).slice(2,8);
+    return`<div class="ms"><div class="mst">${title} <button class="cb" onclick="togSec(this,'${id}')">hide</button></div><div id="${id}">${keys.map(k=>`<div class="qa"><div class="qq">${esc(k)}</div><div class="qa-a">${esc(String(data[k]))}</div></div>`).join('')}</div></div>`;
+  }
+  b+=qaSection('Qualification Answers',s.qual_data);
+  b+=qaSection('Snapshot Answers',s.snapshot_answers);
+  b+=qaSection('Deep Audit Answers',s.deep_answers);
+  b+=`<div class="ms" id="rep-sec" style="display:none"><div class="mst">Generated Audit Report</div><div class="rep" id="rep-box"></div></div>`;
+
+  document.getElementById('mb').innerHTML=b;
+  document.getElementById('mf').innerHTML=`
+    <button class="btn btn-blue" onclick="genReport('${esc(s.id)}')">Generate Report</button>
+    <button class="btn btn-ghost" onclick="dlTx('${esc(s.id)}')">Download Transcript</button>
+    <button class="btn btn-ghost" onclick="closeModal()">Close</button>`;
+}
+
+function togSec(btn,id){const el=document.getElementById(id);if(!el)return;const h=el.style.display==='none';el.style.display=h?'':'none';btn.textContent=h?'hide':'show';}
+
+async function genReport(sid){
+  const sec=document.getElementById('rep-sec'),box=document.getElementById('rep-box');
+  sec.style.display='block';box.textContent='Generating report… this may take 20-30 seconds.';
+  sec.scrollIntoView({behavior:'smooth',block:'start'});
+  try{
+    const r=await fetch('/admin/api/session/'+sid+'/report',{headers:{'Authorization':'Bearer '+token}});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    box.textContent=d.report||'(No report generated)';
+  }catch(e){box.textContent='Error generating report: '+e.message;}
+}
+
+async function dlTx(sid){
+  try{
+    const r=await fetch('/admin/api/session/'+sid+'/transcript',{headers:{'Authorization':'Bearer '+token}});
+    if(!r.ok){alert('Transcript not available — session may still be in progress.');return;}
+    const text=await r.text();
+    const blob=new Blob([text],{type:'text/plain'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download='transcript-'+sid.slice(0,8)+'.txt';a.click();
+    URL.revokeObjectURL(url);
+  }catch(e){alert('Error: '+e.message);}
+}
+
+function closeModal(){document.getElementById('modal').classList.remove('open');}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 
 # ===================================================================
@@ -2652,6 +3195,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     session,
                     f"I'm ready to start the audit. My name is {session.contact_name}, "
                     f"I'm from {session.company_name}. Please begin with the classification questions.",
+                    websocket=websocket,
                 )
                 await websocket.send_json(result)
                 continue
@@ -2666,8 +3210,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             if not user_text:
                 continue
 
-            # Item 2: Send typing indicator acknowledgment
-            result = await handle_message(session, user_text)
+            # Send streaming response with websocket
+            result = await handle_message(session, user_text, websocket=websocket)
             await websocket.send_json(result)
 
     except WebSocketDisconnect:
@@ -2757,6 +3301,20 @@ async def export_session(session_id: str):
     }
 
 
+@app.post("/api/feedback/{session_id}")
+async def submit_feedback(session_id: str, request: Request):
+    session = store.get(session_id)
+    body = await request.json()
+    rating = int(body.get("rating", 0))
+    comment = str(body.get("comment", ""))[:500]
+    feedback_data = {"rating": rating, "comment": comment, "submitted_at": datetime.utcnow().isoformat()}
+    if session:
+        session.feedback = feedback_data
+        asyncio.create_task(save_to_supabase(session))
+    # Store in Supabase feedback table too if available
+    return {"ok": True}
+
+
 @app.get("/api/sessions")
 async def list_sessions():
     return {"sessions": store.all_sessions()}
@@ -2842,6 +3400,15 @@ async def admin_sessions(request: Request):
         e = (s.get("contact_email") or "").lower().strip()
         s["user_audit_count"] = email_counts.get(e, 1)
 
+    for s in sessions:
+        if not s.get("top_bottleneck"):
+            s["top_bottleneck"] = (s.get("metadata") or {}).get("top_bottleneck", "")
+        if not s.get("top_opportunity"):
+            s["top_opportunity"] = (s.get("metadata") or {}).get("top_opportunity", "")
+        # If still empty, try flags
+        if not s.get("top_bottleneck") and s.get("flags"):
+            s["top_bottleneck"] = s["flags"][0].replace("_", " ").title()
+
     return {"sessions": sessions}
 
 
@@ -2849,10 +3416,88 @@ async def admin_sessions(request: Request):
 async def admin_session_detail(session_id: str, request: Request):
     _check_admin(request)
     session = store.get(session_id)
+    if session:
+        return session.to_dict()
+    # Fall back to Supabase for sessions not currently in memory
+    if _supabase_client:
+        try:
+            result = _supabase_client.table("sessions").select("*").eq("id", session_id).execute()
+            if result.data:
+                return result.data[0]
+        except Exception as e:
+            log.warning(f"Supabase detail fetch failed for {session_id}: {e}")
+    raise HTTPException(404, "Session not found")
+
+
+@app.get("/admin/api/session/{session_id}/transcript")
+async def admin_session_transcript(session_id: str, request: Request):
+    _check_admin(request)
+    session = store.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
-    return session.to_dict()
+    lines = [f"STRAT AI AUDIT TRANSCRIPT\nSession: {session_id}\nClient: {session.contact_name} | {session.company_name}\nDate: {session.created_at}\n{'='*60}\n"]
+    for msg in session.messages:
+        role = "STRAT AI" if msg.get("role") == "bot" else (session.contact_name or "CLIENT").upper()
+        ts = msg.get("ts", "")
+        content = msg.get("content", "")
+        lines.append(f"[{ts}] {role}:\n{content}\n")
+    transcript = "\n---\n".join(lines)
+    return Response(
+        content=transcript,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="transcript-{session_id[:8]}.txt"'}
+    )
 
+
+
+
+@app.get("/admin/api/session/{session_id}/report")
+async def admin_session_report(session_id: str, request: Request):
+    _check_admin(request)
+    session = store.get(session_id)
+    if not session and _supabase_client:
+        try:
+            result = _supabase_client.table("sessions").select("*").eq("id", session_id).execute()
+            if result.data:
+                row = result.data[0]
+                session = Session(
+                    id=row.get("id", session_id),
+                    created_at=row.get("created_at", ""),
+                    completed_at=row.get("completed_at", ""),
+                    stage=Stage(row["stage"]) if row.get("stage") else Stage.INTAKE,
+                    client_type=ClientType(row["client_type"]) if row.get("client_type") else ClientType.UNKNOWN,
+                    fit=Fit(row["fit"]) if row.get("fit") else Fit.UNKNOWN,
+                    contact_name=row.get("contact_name", ""),
+                    contact_email=row.get("contact_email", ""),
+                    company_name=row.get("company_name", ""),
+                    api_cost_usd=float(row.get("api_cost_usd") or 0),
+                    api_calls=int(row.get("api_calls") or 0),
+                    calendly_clicked=bool(row.get("calendly_clicked")),
+                    flags=row.get("flags") or [],
+                    snapshot_batch=int(row.get("snapshot_batch") or 0),
+                    snapshot_answers=row.get("snapshot_answers") or {},
+                    deep_answers=row.get("deep_answers") or {},
+                    qual_data=row.get("qual_data") or {},
+                    synthesis_text=row.get("synthesis_text") or "",
+                    deep_modules=row.get("deep_modules") or [],
+                    deep_module_idx=int(row.get("deep_module_idx") or 0),
+                    metadata=row.get("metadata") or {},
+                )
+        except Exception as e:
+            log.warning(f"Supabase fetch for admin report {session_id}: {e}")
+    if not session:
+        raise HTTPException(404, "Session not found")
+    report = await generate_structured_report(session)
+    return {
+        "report": report,
+        "contact": {
+            "name": session.contact_name,
+            "email": session.contact_email,
+            "company": session.company_name,
+        },
+        "session_id": session_id,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
 
 # ===================================================================
 # SSE STREAMING ENDPOINT (Item 24)
