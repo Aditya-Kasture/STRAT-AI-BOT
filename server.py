@@ -72,6 +72,7 @@ STRAT_AI_WEBSITE_URL = os.getenv("STRAT_AI_WEBSITE_URL", "https://stratai.soluti
 STRAT_AI_CONTACT_EMAIL = os.getenv("STRAT_AI_CONTACT_EMAIL", "yaseen@stratai.solutions")
 # Item 20: Admin
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "stratai2026")
+BOT_PASSWORD = os.getenv("BOT_PASSWORD", "")
 # Item 21: Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -1692,6 +1693,7 @@ def summarize_progress(session: Session) -> Dict[str, Any]:
         "stages_total": len(stage_sequence),
         "questions_answered": questions_answered,
         "duration_min": duration_min,
+        "created_at": session.created_at or "",
         "bottlenecks": bottlenecks,
         "bottleneck_count": len(bottlenecks),
         "opportunities": opportunities,
@@ -2082,9 +2084,27 @@ textarea::placeholder{color:#445}
 #feedback-submit{padding:9px 22px;background:#1a6fb5;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;transition:all .2s}
 #feedback-submit:hover{background:#1e90ff}
 #feedback-thanks{color:#4ade80;font-size:13px;display:none;margin-top:8px}
+#pw-gate{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at top,#0a1428 0%,#060b18 60%)}
+#pw-box{background:#0f1830;border:1px solid #1a2a50;border-radius:16px;padding:40px 36px;width:340px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+#pw-box .pw-brand{font-size:18px;font-weight:700;color:#5bb8f5;margin-bottom:6px}
+#pw-box .pw-sub{font-size:12px;color:#6688aa;margin-bottom:24px}
+#pw-inp{width:100%;padding:11px 14px;background:#0a1428;border:1px solid #1a2a50;border-radius:8px;color:#e0e0e0;font-size:14px;font-family:inherit;outline:none;transition:border .15s;margin-bottom:12px}
+#pw-inp:focus{border-color:#5bb8f5}
+#pw-submit{width:100%;padding:11px;background:linear-gradient(135deg,#0a2a5a,#1a6fb5);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;font-family:inherit;transition:opacity .15s}
+#pw-submit:hover{opacity:.85}
+#pw-err{color:#f87171;font-size:12px;margin-top:8px;min-height:16px}
 </style>
 </head>
 <body>
+<div id="pw-gate" style="display:none">
+  <div id="pw-box">
+    <div class="pw-brand">Strat AI Solutions</div>
+    <div class="pw-sub">Enter your access password to continue</div>
+    <input type="password" id="pw-inp" placeholder="Password" onkeydown="if(event.key==='Enter')submitPw()">
+    <button id="pw-submit" onclick="submitPw()">Access Bot</button>
+    <div id="pw-err"></div>
+  </div>
+</div>
 <div id="layout">
 
 <aside id="side-panel" aria-label="Audit summary dashboard">
@@ -2288,7 +2308,10 @@ function updateSummaryPanel(summary){
 
   // Stats — questions_answered and duration updated from server data
   document.getElementById('sp-stat-questions').textContent=summary.questions_answered||0;
-  // Duration: prefer live timer, fallback to server value
+  // Sync timer to actual session start time from server on first update
+  if(!sessionStartTime&&summary.created_at){
+    sessionStartTime=new Date(summary.created_at+'Z').getTime();
+  }
   if(!sessionStartTime){
     document.getElementById('sp-stat-duration').textContent=(summary.duration_min||0)+'m';
   }
@@ -2573,7 +2596,9 @@ function sendDirect(t){
 
 function renderMarkdownContent(text, container){
   try{
-    const html=marked.parse(text,{breaks:true,gfm:true});
+    // Auto-bold A/B/C concern labels like "A.", "B.", "C." at line start or "(A)", "(B)", "(C)"
+    let t=text.replace(/^([A-C][.)]\s)/gm,'**$1**').replace(/\(([A-C])\)/g,'**($1)**');
+    const html=marked.parse(t,{breaks:true,gfm:true});
     const div=document.createElement('div');div.innerHTML=html;container.appendChild(div);
   }catch(e){
     const div=document.createElement('div');div.textContent=text;container.appendChild(div);
@@ -2630,7 +2655,7 @@ function showAuditComplete(){
   auditCompleteShown=true;
   setTimeout(()=>{
     const d=document.createElement('div');d.className='audit-complete-banner';
-    d.innerHTML=`<div class="congrats-title">&#127881; Audit Complete!</div><div class="congrats-sub">Your operational audit is done. We've identified your top bottlenecks and automation opportunities. Download your report now — it has everything you need to save time and money.</div><button class="btn-export-report" onclick="openReportCanvas()">&#128196; View &amp; Export Your Report &rarr;</button>`;
+    d.innerHTML=`<div class="congrats-title">&#127881; Audit Complete!</div><div class="congrats-sub">Your operational audit is done. We've identified your top bottlenecks and automation opportunities.<br><strong>Click the &#8595; Export Report button at the top to download your report</strong>, or use the button below to view it first.</div><button class="btn-export-report" onclick="openReportCanvas()">&#128196; View &amp; Export Your Report &rarr;</button>`;
     msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
     showFeedbackForm();
   }, 1200);
@@ -2703,7 +2728,7 @@ function showFeedbackForm(){
 function showTyping(){
   if(document.getElementById('typing-ind'))return;
   const d=document.createElement('div');d.id='typing-ind';
-  d.innerHTML='<div id="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div><span>Analyzing…</span></div>';
+  d.innerHTML='<div id="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div><span>Generating response…</span></div>';
   msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
   // Extended timeout matching server timeout
   setTimeout(()=>{hideTyping();},120000);
@@ -2779,6 +2804,30 @@ function startAudit(){
 document.getElementById('msg-input').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
 });
+
+// Password gate
+async function checkBotPassword(){
+  const saved=sessionStorage.getItem('bot_pw')||'';
+  try{
+    const r=await fetch('/api/verify-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:saved})});
+    const d=await r.json();
+    if(d.ok){document.getElementById('pw-gate').style.display='none';return;}
+  }catch(e){}
+  document.getElementById('pw-gate').style.display='flex';
+}
+async function submitPw(){
+  const pw=document.getElementById('pw-inp').value;
+  const errEl=document.getElementById('pw-err');
+  errEl.textContent='';
+  try{
+    const r=await fetch('/api/verify-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    const d=await r.json();
+    if(d.ok){sessionStorage.setItem('bot_pw',pw);document.getElementById('pw-gate').style.display='none';return;}
+  }catch(e){}
+  errEl.textContent='Incorrect password. Please try again.';
+  document.getElementById('pw-inp').value='';document.getElementById('pw-inp').focus();
+}
+checkBotPassword();
 </script>
 </body>
 </html>"""
@@ -2932,7 +2981,7 @@ tr:hover td{background:#0a1e3d;cursor:pointer}
         <thead>
           <tr>
             <th>Date</th><th>Company</th><th>Contact</th><th>Type</th><th>Fit</th>
-            <th>Stage</th><th>Top Bottleneck</th><th>API Cost</th><th>Calendly</th><th>Audits</th><th>Actions</th>
+            <th>Stage</th><th>Top Bottleneck</th><th>API Cost</th><th>Call Link</th><th>Audits</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -3000,7 +3049,7 @@ function renderKPIs(){
     {n:done,l:'Completed Audits',s:cr+'% completion rate',c:done?'green':'blue'},
     {n:good,l:'Good Fit Leads',s:cv+'% of sessions',c:good?'green':'blue'},
     {n:mod,l:'Moderate Fit',s:(n?Math.round(mod/n*100):0)+'% of sessions',c:mod?'yellow':'blue'},
-    {n:cal,l:'Calendly Clicks',s:(n?Math.round(cal/n*100):0)+'% click rate',c:cal?'green':'blue'},
+    {n:cal,l:'Call Link Clicks',s:(n?Math.round(cal/n*100):0)+'% click rate',c:cal?'green':'blue'},
     {n:'$'+cost.toFixed(2),l:'Total API Cost',s:'$'+avg.toFixed(3)+' avg/session',c:'blue'},
   ].map(k=>`<div class="kpi"><div class="kn ${k.c}">${k.n}</div><div class="kl">${k.l}</div><div class="ks">${k.s}</div></div>`).join('');
 }
@@ -3051,7 +3100,7 @@ function renderTable(){
       <td style="font-size:12px">${SL[s.stage]||s.stage||'—'}</td>
       <td><span class="trunc" style="font-size:12px" title="${esc(s.top_bottleneck)}">${esc(s.top_bottleneck||'—')}</span></td>
       <td style="font-size:12px">$${(s.api_cost_usd||0).toFixed(3)}</td>
-      <td style="font-size:12px">${s.calendly_clicked?'<span style="color:#4ade80;font-weight:700">✓</span>':'—'}</td>
+      <td style="font-size:12px">${s.calendly_clicked?'<span style="color:#4ade80;font-weight:700" title="Call link was clicked (booking not confirmed)">✓</span>':'—'}</td>
       <td><span class="ap">${audits}</span></td>
       <td onclick="event.stopPropagation()"><button onclick="dlTx('${esc(s.id)}')" style="padding:3px 8px;background:#0a1e3d;color:#5bb8f5;border:1px solid #1a3a6a;border-radius:5px;font-size:11px;cursor:pointer">Transcript</button></td>
     </tr>`;
@@ -3091,7 +3140,7 @@ function renderModal(s){
     <div class="ii"><label>Fit</label><span><span class="badge ${FC[fit]||'bu'}">${FL[fit]}</span></span></div>
     <div class="ii"><label>API Calls</label><span>${s.api_calls||0}</span></div>
     <div class="ii"><label>API Cost</label><span>$${(s.api_cost_usd||0).toFixed(4)}</span></div>
-    <div class="ii"><label>Calendly Clicked</label><span>${s.calendly_clicked?'Yes':'No'}</span></div>
+    <div class="ii"><label>Call Link Clicked</label><span>${s.calendly_clicked?'Link Clicked (booking not confirmed)':'Not Clicked'}</span></div>
     <div class="ii"><label>Session ID</label><span style="font-size:10px;color:#334466">${esc(s.id||'')}</span></div>
   </div></div>`;
 
@@ -3111,6 +3160,14 @@ function renderModal(s){
   b+=qaSection('Qualification Answers',s.qual_data);
   b+=qaSection('Snapshot Answers',s.snapshot_answers);
   b+=qaSection('Deep Audit Answers',s.deep_answers);
+  if(s.feedback&&s.feedback.rating){
+    const stars='★'.repeat(s.feedback.rating)+'☆'.repeat(5-s.feedback.rating);
+    b+=`<div class="ms"><div class="mst">User Feedback</div><div class="ig">
+      <div class="ii"><label>Rating</label><span style="color:#fbbf24;font-size:15px">${stars} <span style="color:#ccc;font-size:12px">(${s.feedback.rating}/5)</span></span></div>
+      <div class="ii"><label>Submitted</label><span>${s.feedback.submitted_at?fmtDate(s.feedback.submitted_at):'—'}</span></div>
+      ${s.feedback.comment?`<div class="ii" style="grid-column:1/-1"><label>Comment</label><span>${esc(s.feedback.comment)}</span></div>`:''}
+    </div></div>`;
+  }
   b+=`<div class="ms" id="rep-sec" style="display:none"><div class="mst">Generated Audit Report</div><div class="rep" id="rep-box"></div></div>`;
 
   document.getElementById('mb').innerHTML=b;
@@ -3352,6 +3409,19 @@ async def ingest_document(request: Request):
 
 # Simple token-based auth for admin
 _admin_tokens: Dict[str, float] = {}
+
+
+@app.post("/api/verify-password")
+async def verify_bot_password(request: Request):
+    if not BOT_PASSWORD:
+        return JSONResponse({"ok": True})
+    try:
+        body = await request.json()
+        if body.get("password") == BOT_PASSWORD:
+            return JSONResponse({"ok": True})
+    except Exception:
+        pass
+    return JSONResponse({"ok": False}, status_code=401)
 
 
 @app.get("/admin")
