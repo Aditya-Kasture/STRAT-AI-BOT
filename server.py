@@ -1859,7 +1859,10 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Strat AI — Audit & Scoping Bot</title>
+<title>Strat AI Solutions — Operational Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:radial-gradient(ellipse at top,#0a1428 0%,#060b18 60%);color:#e0e0e0;height:100vh;display:flex;justify-content:center;overflow:hidden}
@@ -2084,8 +2087,34 @@ textarea::placeholder{color:#445}
 #feedback-submit{padding:9px 22px;background:#1a6fb5;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;transition:all .2s}
 #feedback-submit:hover{background:#1e90ff}
 #feedback-thanks{color:#4ade80;font-size:13px;display:none;margin-top:8px}
+/* Header brand text */
+.logo-text-wrap{display:flex;flex-direction:column;justify-content:center;gap:1px}
+.logo-name{font-size:13.5px;font-weight:700;color:#fff;letter-spacing:-.2px;line-height:1.15}
+.logo-tagline{font-size:9.5px;color:#4a6a8a;letter-spacing:.4px;text-transform:uppercase;line-height:1.15}
+/* Bot message accent border */
+.msg.bot{border-left:2px solid rgba(91,184,245,.3)!important}
+/* Welcome screen feature grid */
+#welcome .welcome-brand{font-size:10.5px;font-weight:700;color:#3a6a9a;text-transform:uppercase;letter-spacing:2px;margin-bottom:4px}
+.features-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;width:100%;max-width:520px;margin-top:6px}
+.feature-card{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:rgba(15,24,48,.55);border:1px solid rgba(26,42,80,.65);border-radius:10px;text-align:left;transition:border-color .2s,background .2s}
+.feature-card:hover{border-color:rgba(91,184,245,.3);background:rgba(15,24,48,.8)}
+.feature-icon{font-size:18px;line-height:1;flex-shrink:0;margin-top:2px}
+.feature-text strong{display:block;font-size:12.5px;color:#c8ddf0;font-weight:600;margin-bottom:2px}
+.feature-text span{font-size:11.5px;color:#6688aa;line-height:1.4}
+/* Trust bar */
+.trust-bar{display:flex;align-items:center;gap:10px;font-size:11.5px;color:#3a5070;margin-top:10px;flex-wrap:wrap;justify-content:center}
+.trust-sep{width:3px;height:3px;border-radius:50%;background:#1a2a40;flex-shrink:0}
+/* Calendly as CTA button */
+.cal-btn{display:inline-flex;align-items:center;gap:9px;padding:13px 26px;background:linear-gradient(135deg,#0a2a5a,#1a6fb5);color:#fff!important;border-radius:11px;font-weight:700;font-size:14px;text-decoration:none!important;transition:all .2s;box-shadow:0 6px 20px rgba(26,111,181,.35);letter-spacing:.2px;margin-top:6px}
+.cal-btn:hover{background:linear-gradient(135deg,#1a6fb5,#1e90ff)!important;transform:translateY(-1px);box-shadow:0 10px 28px rgba(26,111,181,.5)!important;color:#fff!important}
+.calendly-banner p{color:#6688aa;font-size:12px;margin-bottom:10px;line-height:1.55}
+/* Intake form labels */
+.intake-field{margin-bottom:10px;text-align:left}
+.intake-label{display:block;font-size:10.5px;font-weight:600;color:#4a6a8a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+/* Info bar — subtle */
+#info-bar{font-size:10px;letter-spacing:.2px;color:#2a3850}
 #pw-gate{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at top,#0a1428 0%,#060b18 60%)}
-#pw-box{background:#0f1830;border:1px solid #1a2a50;border-radius:16px;padding:40px 36px;width:340px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+#pw-box{background:#0f1830;border:1px solid rgba(91,184,245,.15);border-radius:18px;padding:40px 36px;width:340px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.6),0 0 0 1px rgba(91,184,245,.08),0 0 80px rgba(26,111,181,.08)}
 #pw-box .pw-brand{font-size:18px;font-weight:700;color:#5bb8f5;margin-bottom:6px}
 #pw-box .pw-sub{font-size:12px;color:#6688aa;margin-bottom:24px}
 #pw-inp{width:100%;padding:11px 14px;background:#0a1428;border:1px solid #1a2a50;border-radius:8px;color:#e0e0e0;font-size:14px;font-family:inherit;outline:none;transition:border .15s;margin-bottom:12px}
@@ -2098,6 +2127,7 @@ textarea::placeholder{color:#445}
 <body>
 <div id="pw-gate" style="display:none">
   <div id="pw-box">
+    <img src="/static/logo.jpg" alt="Strat AI" style="width:60px;height:60px;border-radius:15px;margin-bottom:16px;object-fit:contain;box-shadow:0 8px 24px rgba(26,111,181,.3)" onerror="this.style.display='none'">
     <div class="pw-brand">Strat AI Solutions</div>
     <div class="pw-sub">Enter your access password to continue</div>
     <input type="password" id="pw-inp" placeholder="Password" onkeydown="if(event.key==='Enter')submitPw()">
@@ -2184,6 +2214,10 @@ textarea::placeholder{color:#445}
     <div class="logo">
       <img src="/static/logo.jpg" alt="" aria-label="Strat AI" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
       <div class="logo-fallback" style="display:none" aria-hidden="true"></div>
+      <div class="logo-text-wrap">
+        <div class="logo-name">Strat AI</div>
+        <div class="logo-tagline">Audit Bot</div>
+      </div>
     </div>
     <div id="header-right">
       <button id="export-btn" onclick="exportReport()">&#8595; Export Report</button>
@@ -2193,24 +2227,30 @@ textarea::placeholder{color:#445}
   <div id="progress-bar"><div id="progress-fill"></div></div>
   <div id="messages">
     <div id="welcome">
+      <div class="welcome-brand">Strat AI Solutions</div>
       <img src="/static/logo.jpg" alt="Strat AI" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
       <div class="logo-fallback-big" style="display:none" aria-hidden="true"></div>
-      <h1>Audit &amp; Scoping Bot</h1>
-      <p>I'll identify your highest-value automation opportunities through a structured operational audit. We'll classify your operation, run a snapshot audit, synthesize bottlenecks, and build a clear scope.</p>
-      <div class="features">
-        <span>&#10003; Broker & Lender operations</span>
-        <span>&#10003; Adaptive questioning &#8212; one question at a time</span>
-        <span>&#10003; Bottleneck identification & ROI ranking</span>
-        <span>&#10003; Matched to specific Sprint offerings</span>
-        <span>&#10003; 30/60/90 implementation plan</span>
-        <span>&#10003; Exportable proposal-ready report</span>
+      <h1>Operational Audit &amp; Scoping</h1>
+      <p>Identify your highest-value automation opportunities through a structured AI-powered audit — built for CRE brokers and lenders.</p>
+      <div class="features-grid">
+        <div class="feature-card"><span class="feature-icon">&#128269;</span><div class="feature-text"><strong>Deep Operational Audit</strong><span>Broker &amp; lender-specific question tracks</span></div></div>
+        <div class="feature-card"><span class="feature-icon">&#128200;</span><div class="feature-text"><strong>Bottleneck Ranking</strong><span>Revenue-first prioritization</span></div></div>
+        <div class="feature-card"><span class="feature-icon">&#9889;</span><div class="feature-text"><strong>Automation Matching</strong><span>Matched to Sprint offerings</span></div></div>
+        <div class="feature-card"><span class="feature-icon">&#128196;</span><div class="feature-text"><strong>Exportable Report</strong><span>Proposal-ready in minutes</span></div></div>
       </div>
-      <button id="start-btn" onclick="showIntakeForm()">Start Audit &#8594;</button>
+      <div class="trust-bar">
+        <span>&#10003; No account needed</span>
+        <span class="trust-sep"></span>
+        <span>&#8987; 20&ndash;30 minutes</span>
+        <span class="trust-sep"></span>
+        <span>&#128274; Confidential</span>
+      </div>
+      <button id="start-btn" onclick="showIntakeForm()">Begin Your Audit &#8594;</button>
     </div>
   </div>
   <div id="input-area" style="display:none">
-    <textarea id="msg-input" rows="3" placeholder="Type your answer here... (Shift+Enter for new line)"></textarea>
-    <button id="send-btn" onclick="send()">Send</button>
+    <textarea id="msg-input" rows="3" placeholder="Type your answer here&hellip; (Shift+Enter for new line)"></textarea>
+    <button id="send-btn" onclick="send()">Send &#8593;</button>
   </div>
   <div id="info-bar" style="display:none">
     <span id="info-type">Type: &#8212;</span>
@@ -2222,13 +2262,22 @@ textarea::placeholder{color:#445}
   <!-- Item 17: Email capture overlay -->
   <div id="intake-overlay" style="display:none">
     <div id="intake-form">
-      <img src="/static/logo.jpg" alt="Strat AI" style="width:48px;height:48px;border-radius:12px;margin-bottom:12px;object-fit:contain" onerror="this.style.display='none'">
+      <img src="/static/logo.jpg" alt="Strat AI" style="width:44px;height:44px;border-radius:11px;margin-bottom:10px;object-fit:contain" onerror="this.style.display='none'">
       <h2>Before we begin</h2>
-      <p>Enter your details so we can tailor the audit to your operation and send you the report when we're done.</p>
+      <p>We'll tailor the audit to your operation and send you the report when we're done.</p>
       <div class="intake-error" id="intake-error">Please fill in all fields.</div>
-      <input type="text" id="intake-name" placeholder="Your full name" autocomplete="name">
-      <input type="email" id="intake-email" placeholder="Work email" autocomplete="email">
-      <input type="text" id="intake-company" placeholder="Company name" autocomplete="organization">
+      <div class="intake-field">
+        <label class="intake-label" for="intake-name">Full Name</label>
+        <input type="text" id="intake-name" placeholder="e.g. Sarah Johnson" autocomplete="name">
+      </div>
+      <div class="intake-field">
+        <label class="intake-label" for="intake-email">Work Email</label>
+        <input type="email" id="intake-email" placeholder="you@company.com" autocomplete="email">
+      </div>
+      <div class="intake-field">
+        <label class="intake-label" for="intake-company">Company Name</label>
+        <input type="text" id="intake-company" placeholder="Your brokerage or firm" autocomplete="organization">
+      </div>
       <button id="intake-submit" onclick="submitIntake()">Continue to Audit &#8594;</button>
     </div>
   </div>
@@ -2641,7 +2690,7 @@ function addMsg(role,text,meta){
 function showCalendly(url){
   if(document.getElementById('calendly-banner'))return;
   const d=document.createElement('div');d.id='calendly-banner';d.className='calendly-banner';
-  d.innerHTML=`<a href="${url}" target="_blank" rel="noopener" onclick="trackCalendly()">&#128197; Book Your 30-Minute Scoping Call &rarr;</a><p>Click the link above to choose your time directly — no waiting for a callback</p>`;
+  d.innerHTML=`<p>Your audit is complete. Book a 30-minute scoping call to review your results with the Strat AI team.</p><a href="${url}" target="_blank" rel="noopener" onclick="trackCalendly()" class="cal-btn"><span>&#128197;</span>Book Your Scoping Call &rarr;</a>`;
   msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
 }
 
