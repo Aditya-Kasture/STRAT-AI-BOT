@@ -2019,7 +2019,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
 @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.2)}}
 
 /* Intake form -- polished modal */
-#intake-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(6,11,24,0.92);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:100;animation:fadeIn .3s}
+#intake-overlay{position:fixed;inset:0;background:rgba(6,11,24,0.94);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 #intake-form{background:linear-gradient(145deg,#0f1830,#0a1428);border:1px solid rgba(26,42,80,.8);border-radius:20px;padding:40px 36px;width:90%;max-width:440px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.6),0 0 0 1px rgba(91,184,245,.05)}
 #intake-form h2{color:#fff;font-size:22px;margin-bottom:8px;letter-spacing:-.3px;font-weight:700}
