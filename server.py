@@ -56,9 +56,9 @@ DATA_DIR = os.getenv("DATA_DIR", "./data")
 FRONTEND_DIR = os.getenv("FRONTEND_DIR", "./frontend")
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
-MAX_HISTORY = 30
+MAX_HISTORY = 12
 SESSION_TTL_HOURS = 72
-BATCH_SIZE = 6
+BATCH_SIZE = 4
 
 # Item 18: HubSpot
 HUBSPOT_API_KEY = os.getenv("HUBSPOT_API_KEY", "")
@@ -633,7 +633,7 @@ BASE_SYSTEM = """You are Strat AI Solutions' Audit Scoping Bot — an expert sco
 YOUR JOB: Classify → Qualify → Snapshot Audit → Synthesize → Deep Audit (targeted) → Proposal-Ready Output.
 
 HARD RULES:
-- Ask questions ONE AT A TIME. After the user answers, use their response to adapt and inform your next question. Never dump 6+ questions at once. If presenting 2-3 questions together, separate each with a full blank line and a divider line (─────────). Prefer multiple-choice format — always offer 4 labeled options (A, B, C, D) when applicable. Learn from each answer before moving on.
+- Ask questions ONE AT A TIME. After the user answers, use their response to adapt and inform your next question. Never dump 6+ questions at once. CRITICAL FORMATTING: When a question is multiple choice, write the question text THEN IMMEDIATELY the A) B) C) D) options on separate lines — NEVER write it in prose first and then reformat it as multiple choice. For questions where multiple answers apply (e.g. "which systems", "which channels"), explicitly say "Select all that apply." If presenting 2 questions together, separate with a blank line and a divider (─────────). Learn from each answer before moving on.
 - Never skip classification or qualification.
 - Never recommend automation without explaining the bottleneck first.
 - Never hide uncertainty — state what is missing.
@@ -770,7 +770,7 @@ After each answer:
 Previous answers collected:
 {prev}
 
-When you have gathered at least 3 full batches of substantive answers (covering business overview, volume, bottlenecks, systems, workflows, intake, and docs), end with: SNAPSHOT: COMPLETE
+When you have gathered at least 2 full batches of substantive answers (covering business overview, volume, bottlenecks, and systems), end with: SNAPSHOT: COMPLETE
 Otherwise end with: SNAPSHOT: CONTINUE"""
 
     elif s.stage == Stage.SYNTHESIS:
@@ -832,7 +832,7 @@ End with: SYNTHESIS: COMPLETE"""
         mods = s.deep_modules
         current_mod = mods[s.deep_module_idx] if s.deep_module_idx < len(mods) else "done"
         qs = get_deep_questions(ct, current_mod)
-        q_text = "\n".join(f"- {q}" for q in qs[:8])
+        q_text = "\n".join(f"- {q}" for q in qs[:4])
         prev = json.dumps(s.deep_answers, indent=1)[:2000]
 
         return f"""
@@ -1020,67 +1020,90 @@ async def stream_llm(system_prompt: str, messages: List[Dict[str, Any]],
     input_tokens = 0
     output_tokens = 0
 
+    payload = {
+        "model": LLM_MODEL,
+        "max_tokens": 8192,
+        "system": system_prompt,
+        "messages": deduped[-MAX_HISTORY:],
+        "stream": True,
+    }
+
+    max_retries = 3
+    retry_delays = [5, 15, 30]  # seconds between retries on 429
+
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            payload = {
-                "model": LLM_MODEL,
-                "max_tokens": 8192,
-                "system": system_prompt,
-                "messages": deduped[-MAX_HISTORY:],
-                "stream": True,
-            }
-            log.info(f"Streaming Anthropic API -- model: {LLM_MODEL}, messages: {len(deduped)}")
-            async with client.stream(
-                "POST",
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json=payload,
-            ) as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    try:
-                        data = json.loads(body)
-                        err_msg = data.get("error", {}).get("message", "Unknown error")
-                    except Exception:
-                        err_msg = f"HTTP {resp.status_code}"
-                    log.error(f"Anthropic streaming API error: {err_msg}")
-                    return f"I encountered an issue connecting to the AI service. Please try again in a moment. (Error: {err_msg})"
+            for attempt in range(max_retries):
+                log.info(f"Streaming Anthropic API -- model: {LLM_MODEL}, messages: {len(deduped)}, attempt: {attempt + 1}")
+                async with client.stream(
+                    "POST",
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json=payload,
+                ) as resp:
+                    if resp.status_code == 429:
+                        body = await resp.aread()
+                        if attempt < max_retries - 1:
+                            delay = retry_delays[attempt]
+                            log.warning(f"Anthropic 429 rate limit — retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(delay)
+                            continue
+                        return "The AI service is currently busy. Please wait a moment and try again."
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        try:
+                            data = json.loads(body)
+                            err_msg = data.get("error", {}).get("message", "Unknown error")
+                        except Exception:
+                            err_msg = f"HTTP {resp.status_code}"
+                        log.error(f"Anthropic streaming API error: {err_msg}")
+                        return f"I encountered an issue connecting to the AI service. Please try again in a moment. (Error: {err_msg})"
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    chunk_type = chunk.get("type", "")
+                        chunk_type = chunk.get("type", "")
 
-                    if chunk_type == "message_start":
-                        usage = chunk.get("message", {}).get("usage", {})
-                        input_tokens = usage.get("input_tokens", 0)
+                        if chunk_type == "message_start":
+                            usage = chunk.get("message", {}).get("usage", {})
+                            input_tokens = usage.get("input_tokens", 0)
 
-                    elif chunk_type == "message_delta":
-                        usage = chunk.get("usage", {})
-                        output_tokens = usage.get("output_tokens", 0)
+                        elif chunk_type == "message_delta":
+                            usage = chunk.get("usage", {})
+                            output_tokens = usage.get("output_tokens", 0)
 
-                    elif chunk_type == "content_block_delta":
-                        delta = chunk.get("delta", {})
-                        text = delta.get("text", "")
-                        if text:
-                            full_text += text
-                            if websocket is not None:
-                                try:
-                                    await websocket.send_json({"type": "chunk", "content": text})
-                                except Exception:
-                                    pass
+                        elif chunk_type == "content_block_delta":
+                            delta = chunk.get("delta", {})
+                            text = delta.get("text", "")
+                            if text:
+                                full_text += text
+                                if websocket is not None:
+                                    try:
+                                        # Strip control tokens before sending to frontend
+                                        safe = re.sub(
+                                            r'\n?(CLASSIFICATION:\s*\w+|QUALIFICATION:\s*\w[^\n]*|'
+                                            r'FIT:\s*(?:GOOD|MODERATE|POOR)|SNAPSHOT:\s*\w+|'
+                                            r'SYNTHESIS:\s*COMPLETE|DEEP_MODULE:\s*COMPLETE|'
+                                            r'DEEP_AUDIT:\s*COMPLETE|PROPOSAL:\s*COMPLETE)\s*',
+                                            '', text, flags=re.IGNORECASE
+                                        )
+                                        if safe:
+                                            await websocket.send_json({"type": "chunk", "content": safe})
+                                    except Exception:
+                                        pass
+                break  # successful stream — exit retry loop
 
         # Cost tracking
         if session:
@@ -1262,7 +1285,7 @@ def detect_transitions(text: str, session: Session) -> Session:
                 next_stage = actions["next"]
                 if next_stage == Stage.DEEP_AUDIT:
                     mods = get_deep_modules(session.client_type.value)
-                    session.deep_modules = mods[:3]
+                    session.deep_modules = mods[:2]
                     session.deep_module_idx = 0
                     session.synthesis_text = text
                 if next_stage == Stage.COMPLETE:
@@ -1866,7 +1889,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:radial-gradient(ellipse at top,#0a1428 0%,#060b18 60%);color:#e0e0e0;height:100vh;display:flex;justify-content:center;overflow:hidden}
-#layout{display:flex;width:100%;max-width:1280px;height:100vh}
+#layout{display:flex;width:100%;max-width:1280px;height:100vh;justify-content:center}
 #app{flex:1;min-width:0;max-width:820px;height:100vh;display:flex;flex-direction:column;background:#0a1020;position:relative}
 
 /* Left dashboard panel -- hidden until audit begins */
@@ -2241,7 +2264,7 @@ textarea::placeholder{color:#445}
       <div class="trust-bar">
         <span>&#10003; No account needed</span>
         <span class="trust-sep"></span>
-        <span>&#8987; 20&ndash;30 minutes</span>
+        <span>&#8987; 5&ndash;10 minutes</span>
         <span class="trust-sep"></span>
         <span>&#128274; Confidential</span>
       </div>
@@ -2417,9 +2440,12 @@ let streamText='';
 
 function showIntakeForm(){
   document.getElementById('intake-overlay').style.display='flex';
+  // Pre-fill email if saved
+  const savedEmail=localStorage.getItem('strat_ai_email')||'';
+  if(savedEmail){document.getElementById('intake-email').value=savedEmail;}
 }
 
-function submitIntake(){
+async function submitIntake(){
   const name=document.getElementById('intake-name').value.trim();
   const email=document.getElementById('intake-email').value.trim();
   const company=document.getElementById('intake-company').value.trim();
@@ -2431,21 +2457,80 @@ function submitIntake(){
     errEl.textContent='Please enter a valid email address.';errEl.style.display='block';return;
   }
   errEl.style.display='none';
-  contactInfo={name,email,company};
+  localStorage.setItem('strat_ai_email',email);
+  // Check for existing sessions
+  try{
+    const r=await fetch(`/api/sessions/by-email?email=${encodeURIComponent(email)}`);
+    if(r.ok){
+      const d=await r.json();
+      const prev=(d.sessions||[]).filter(s=>s.stage!=='intake'&&s.stage!=='complete');
+      if(prev.length>0){
+        showResumeModal(prev,{name,email,company});
+        return;
+      }
+    }
+  }catch(e){/* ignore, fall through to new audit */}
+  startNewAudit({name,email,company});
+}
+
+function startNewAudit(info){
+  contactInfo=info;
   document.getElementById('intake-overlay').style.display='none';
-  document.getElementById('sp-company').textContent=company;
-  document.getElementById('sp-contact').textContent=name+(email?' \u00B7 '+email:'');
+  document.getElementById('sp-company').textContent=info.company;
+  document.getElementById('sp-contact').textContent=info.name+(info.email?' \u00B7 '+info.email:'');
   showSidePanel();
   startAudit();
 }
 
+function showResumeModal(sessions,newInfo){
+  const existing=document.getElementById('resume-modal');
+  if(existing)existing.remove();
+  const modal=document.createElement('div');
+  modal.id='resume-modal';
+  modal.style.cssText='position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(4px)';
+  const stageLabels={'classify':'Classification','qualify':'Qualification','snapshot':'Snapshot Audit','synthesis':'Synthesis','deep_audit':'Deep Audit','proposal_ready':'Proposal Ready'};
+  const rows=sessions.slice(0,3).map(s=>{
+    const dt=s.created_at?new Date(s.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'';
+    const stageLabel=stageLabels[s.stage]||s.stage||'In Progress';
+    const co=s.company_name||'Your session';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:#0a1428;border:1px solid #1a2a50;border-radius:9px;margin-bottom:8px">
+      <div><div style="font-size:13px;color:#c8ddf0;font-weight:600">${co}</div><div style="font-size:11px;color:#5a7a9a;margin-top:2px">${stageLabel} &middot; ${dt}</div></div>
+      <button data-sid="${s.id}" class="resume-btn" style="padding:7px 14px;background:#1a6fb5;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">Resume</button>
+    </div>`;
+  }).join('');
+  modal.innerHTML=`<div style="background:#0f1830;border:1px solid #1a3a6a;border-radius:16px;padding:28px 26px;width:420px;max-width:95vw;box-shadow:0 24px 64px rgba(0,0,0,.7)">
+    <h2 style="font-size:16px;color:#fff;margin-bottom:6px">Welcome back!</h2>
+    <p style="font-size:12.5px;color:#6688aa;margin-bottom:18px">You have ${sessions.length} in-progress audit${sessions.length>1?'s':''}. Resume one or start fresh.</p>
+    ${rows}
+    <button id="new-audit-btn" style="width:100%;margin-top:10px;padding:11px;background:transparent;color:#5bb8f5;border:1px solid #1a3a6a;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer">Start a new audit instead</button>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll('.resume-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      const sid2=btn.dataset.sid;
+      modal.remove();
+      resumeSessionId=sid2;
+      startNewAudit(newInfo);
+    };
+  });
+  modal.querySelector('#new-audit-btn').onclick=()=>{
+    modal.remove();
+    startNewAudit(newInfo);
+  };
+}
+
 let reconnects=0;
+let resumeSessionId=null;
 function connect(){
+  const effectiveSid=resumeSessionId||sid;
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  ws=new WebSocket(`${proto}//${location.host}/ws/${sid}`);
+  ws=new WebSocket(`${proto}//${location.host}/ws/${effectiveSid}`);
   ws.onopen=()=>{
     reconnects=0;
-    if(contactInfo.name){
+    if(resumeSessionId){
+      ws.send(JSON.stringify({type:'resume'}));
+      resumeSessionId=null;
+    }else if(contactInfo.name){
       ws.send(JSON.stringify({type:'intake',name:contactInfo.name,email:contactInfo.email,company:contactInfo.company}));
     }
   };
@@ -2458,6 +2543,22 @@ function connect(){
       addMsg('bot','Something went wrong. Please try again.');return;
     }
 
+    if(d.type==='resumed'){
+      hideTyping();finalizeStream();
+      document.getElementById('send-btn').disabled=false;
+      // Restore UI state for resumed session
+      const msgs2=document.getElementById('messages');
+      if(d.messages&&d.messages.length){
+        d.messages.forEach(m=>{
+          addMsg(m.role==='bot'?'bot':'user',m.content||'');
+        });
+      }
+      if(d.stage_label)document.getElementById('badge').textContent=d.stage_label;
+      if(d.progress!==undefined)document.getElementById('progress-fill').style.width=d.progress+'%';
+      if(d.summary)updateSummaryPanel(d.summary);
+      if(d.show_calendly&&d.calendly_url)showCalendly(d.calendly_url);
+      return;
+    }
     if(d.type==='chunk'){
       // Streaming chunk \u2014 accumulate and show
       streamText+=d.content;
@@ -2525,11 +2626,12 @@ function createStreamingEl(){
 function updateStreamingEl(el, text){
   const body=el.querySelector('.stream-body');
   if(!body)return;
-  // Render markdown progressively
+  // Strip control tokens that should not be shown to the user
+  const displayText=text.replace(/(CLASSIFICATION:\s*\w+|QUALIFICATION:\s*\w[^\n]*|FIT:\s*(?:GOOD|MODERATE|POOR)|SNAPSHOT:\s*\w+|SYNTHESIS:\s*COMPLETE|DEEP_MODULE:\s*COMPLETE|DEEP_AUDIT:\s*COMPLETE|PROPOSAL:\s*COMPLETE)\s*$/gi,'').trimEnd();
   try{
-    body.innerHTML=marked.parse(text,{breaks:true,gfm:true});
+    body.innerHTML=marked.parse(displayText,{breaks:true,gfm:true});
   }catch(e){
-    body.textContent=text;
+    body.textContent=displayText;
   }
 }
 
@@ -2598,6 +2700,7 @@ function renderMCQBlock(stem,opts,container){
   const oc=document.createElement('div');
   oc.className='mcq-options';
   let selectedOpt=null;
+  oc.style.flexWrap='wrap';
   opts.forEach(opt=>{
     const item=document.createElement('div');
     item.className='mcq-opt';
@@ -2619,16 +2722,20 @@ function renderMCQBlock(stem,opts,container){
       item.appendChild(txt);
     }
     item.onclick=()=>{
-      oc.querySelectorAll('.mcq-opt').forEach(o=>o.classList.remove('selected'));
-      item.classList.add('selected');
-      selectedOpt=raw;
-      confirmBtn.style.display='flex';
+      item.classList.toggle('selected');
+      const sel=Array.from(oc.querySelectorAll('.mcq-opt.selected')).map(o=>{
+        const m=o.querySelector('.mcq-opt-text');return m?m.textContent:o.textContent;
+      });
+      selectedOpt=sel.join(', ');
+      confirmBtn.style.display=sel.length?'flex':'none';
+      confirmBtn.innerHTML=sel.length>1?`Submit ${sel.length} answers &rarr;`:'Submit answer &rarr;';
     };
     oc.appendChild(item);
   });
   wrap.appendChild(oc);
   const confirmBtn=document.createElement('button');confirmBtn.className='mcq-confirm';
   confirmBtn.innerHTML='Submit answer &rarr;';
+  confirmBtn.style.display='none';
   confirmBtn.onclick=()=>{
     if(!selectedOpt)return;
     oc.querySelectorAll('.mcq-opt').forEach(o=>o.classList.add('locked'));
@@ -3309,6 +3416,59 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 await websocket.send_json(result)
                 continue
 
+            # Session resumption
+            if msg_type == "resume":
+                if not store.get(session_id) and _supabase_client:
+                    try:
+                        r = _supabase_client.table("sessions").select("*").eq("id", session_id).execute()
+                        if r.data:
+                            row = r.data[0]
+                            s = Session(
+                                id=row.get("id", session_id),
+                                created_at=row.get("created_at", ""),
+                                completed_at=row.get("completed_at", ""),
+                                stage=Stage(row["stage"]) if row.get("stage") else Stage.INTAKE,
+                                client_type=ClientType(row["client_type"]) if row.get("client_type") else ClientType.UNKNOWN,
+                                fit=Fit(row["fit"]) if row.get("fit") else Fit.UNKNOWN,
+                                contact_name=row.get("contact_name", ""),
+                                contact_email=row.get("contact_email", ""),
+                                company_name=row.get("company_name", ""),
+                                api_cost_usd=float(row.get("api_cost_usd") or 0),
+                                api_calls=int(row.get("api_calls") or 0),
+                                calendly_clicked=bool(row.get("calendly_clicked")),
+                                flags=row.get("flags") or [],
+                                snapshot_batch=int(row.get("snapshot_batch") or 0),
+                                snapshot_answers=row.get("snapshot_answers") or {},
+                                deep_answers=row.get("deep_answers") or {},
+                                qual_data=row.get("qual_data") or {},
+                                synthesis_text=row.get("synthesis_text") or "",
+                                deep_modules=row.get("deep_modules") or [],
+                                deep_module_idx=int(row.get("deep_module_idx") or 0),
+                                metadata=row.get("metadata") or {},
+                            )
+                            store._sessions[session_id] = s
+                            session = s
+                    except Exception as e:
+                        log.warning(f"Resume load failed for {session_id}: {e}")
+                summary = summarize_progress(session)
+                await websocket.send_json({
+                    "type": "resumed",
+                    "messages": session.messages[-6:],
+                    "stage": session.stage.value,
+                    "stage_label": STAGE_LABELS.get(session.stage, ""),
+                    "client_type": session.client_type.value,
+                    "fit": session.fit.value,
+                    "progress": session.progress_pct(),
+                    "contact_name": session.contact_name,
+                    "contact_email": session.contact_email,
+                    "company_name": session.company_name,
+                    "flags": session.flags,
+                    "summary": summary,
+                    "show_calendly": session.stage in (Stage.PROPOSAL, Stage.COMPLETE),
+                    "calendly_url": CALENDLY_URL if session.stage in (Stage.PROPOSAL, Stage.COMPLETE) else "",
+                })
+                continue
+
             # Item 19: Track Calendly clicks
             if msg_type == "calendly_click":
                 session.calendly_clicked = True
@@ -3427,6 +3587,35 @@ async def submit_feedback(session_id: str, request: Request):
 @app.get("/api/sessions")
 async def list_sessions():
     return {"sessions": store.all_sessions()}
+
+
+@app.get("/api/sessions/by-email")
+async def sessions_by_email(email: str):
+    """Look up prior sessions by email for session resumption."""
+    email_lower = email.lower().strip()
+    results = []
+    if _supabase_client:
+        try:
+            r = _supabase_client.table("sessions").select(
+                "id,created_at,stage,client_type,fit,company_name,contact_name,completed_at"
+            ).ilike("contact_email", email_lower).order("created_at", desc=True).limit(5).execute()
+            results = r.data or []
+        except Exception as e:
+            log.warning(f"Sessions by email lookup failed: {e}")
+    for s in store._sessions.values():
+        if (s.contact_email or "").lower() == email_lower:
+            if not any(r.get("id") == s.id for r in results):
+                results.append({
+                    "id": s.id,
+                    "created_at": s.created_at,
+                    "stage": s.stage.value if isinstance(s.stage, Enum) else s.stage,
+                    "client_type": s.client_type.value if isinstance(s.client_type, Enum) else s.client_type,
+                    "fit": s.fit.value if isinstance(s.fit, Enum) else s.fit,
+                    "company_name": s.company_name,
+                    "contact_name": s.contact_name,
+                    "completed_at": s.completed_at,
+                })
+    return {"sessions": results[:5]}
 
 
 @app.get("/api/health")
