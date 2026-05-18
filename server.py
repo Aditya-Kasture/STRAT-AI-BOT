@@ -1444,6 +1444,7 @@ def _session_to_supabase_row(session: Session) -> Dict[str, Any]:
         "deep_module_idx": session.deep_module_idx,
         "metadata": session.metadata,
         "feedback": session.feedback,
+        "messages": session.messages,
     }
 
 
@@ -1811,6 +1812,8 @@ async def startup():
                     log.warning(f"Failed to ingest {f}: {e}")
     # Item 4: Start cleanup loop (was defined but task created correctly)
     asyncio.create_task(_cleanup_loop())
+    if not _supabase_client:
+        log.warning("SUPABASE NOT CONFIGURED — sessions are in-memory only and will be lost on restart. Set SUPABASE_URL and SUPABASE_KEY env vars.")
     # Restore all persisted sessions from Supabase into the in-memory store
     if _supabase_client:
         try:
@@ -1843,6 +1846,8 @@ async def startup():
                         deep_modules=row.get("deep_modules") or [],
                         deep_module_idx=int(row.get("deep_module_idx") or 0),
                         metadata=row.get("metadata") or {},
+                        messages=row.get("messages") or [],
+                        feedback=row.get("feedback") or {},
                     )
                     store._sessions[sid] = s
                     loaded += 1
@@ -1852,6 +1857,24 @@ async def startup():
         except Exception as e:
             log.warning(f"Failed to load Supabase sessions on startup: {e}")
     log.info("Server ready")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Flush all in-memory sessions to Supabase before the process exits."""
+    if not _supabase_client:
+        return
+    log.info("Shutdown: flushing in-memory sessions to Supabase...")
+    saved = 0
+    for _sess in store._sessions.values():
+        try:
+            _supabase_client.table("sessions").upsert(
+                _session_to_supabase_row(_sess), on_conflict="id"
+            ).execute()
+            saved += 1
+        except Exception as _e:
+            log.warning(f"Shutdown save failed for {_sess.id}: {_e}")
+    log.info(f"Shutdown: saved {saved} sessions to Supabase")
 
 
 async def _cleanup_loop():
@@ -3445,6 +3468,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                                 deep_modules=row.get("deep_modules") or [],
                                 deep_module_idx=int(row.get("deep_module_idx") or 0),
                                 metadata=row.get("metadata") or {},
+                                messages=row.get("messages") or [],
+                                feedback=row.get("feedback") or {},
                             )
                             store._sessions[session_id] = s
                             session = s
@@ -3485,6 +3510,14 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
 
     except WebSocketDisconnect:
         log.info(f"WS disconnected: {session_id}")
+        _disc_sess = store.get(session_id)
+        if _disc_sess and _supabase_client:
+            try:
+                _supabase_client.table("sessions").upsert(
+                    _session_to_supabase_row(_disc_sess), on_conflict="id"
+                ).execute()
+            except Exception as _e:
+                log.warning(f"Disconnect save failed for {session_id}: {_e}")
     except Exception as e:
         log.error(f"WS error: {e}")
         try:

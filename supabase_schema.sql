@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   synthesis_text    TEXT DEFAULT '',
   deep_modules      JSONB DEFAULT '[]',
   deep_module_idx   INTEGER DEFAULT 0,
-  metadata          JSONB DEFAULT '{}'
+  metadata          JSONB DEFAULT '{}',
+  feedback          JSONB DEFAULT '{}'
 );
 
 -- Indexes for common admin queries and future multi-audit dashboard (#15)
@@ -39,3 +40,6 @@ DROP POLICY IF EXISTS "service_full_access" ON sessions;
 CREATE POLICY "service_full_access" ON sessions
   USING (true)
   WITH CHECK (true);
+
+-- Add messages column for persistent chat history (safe to re-run on existing schema)
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS messages JSONB DEFAULT '[]';
