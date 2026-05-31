@@ -65,7 +65,7 @@ HUBSPOT_API_KEY = os.getenv("HUBSPOT_API_KEY", "")
 # Item 23: Slack
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 # Item 19: Calendly — set both URLs in .env (Yaseen to provide)
-CALENDLY_URL = os.getenv("CALENDLY_URL", "https://calendly.com/yaseen-stratai/30min")
+CALENDLY_URL = os.getenv("CALENDLY_URL", "https://calendly.com/yaseen-strataisolutions/scoping")
 CALENDLY_URL_INTRO = os.getenv("CALENDLY_URL_INTRO", CALENDLY_URL)  # alternate/intro link
 # Public contact / website URL used in live summary panel footer (no direct phone)
 STRAT_AI_WEBSITE_URL = os.getenv("STRAT_AI_WEBSITE_URL", "https://stratai.solutions/contact")
@@ -1444,7 +1444,6 @@ def _session_to_supabase_row(session: Session) -> Dict[str, Any]:
         "deep_module_idx": session.deep_module_idx,
         "metadata": session.metadata,
         "feedback": session.feedback,
-        "messages": session.messages,
     }
 
 
@@ -1454,9 +1453,10 @@ async def save_to_supabase(session: Session) -> None:
         return
     try:
         row = _session_to_supabase_row(session)
-        _supabase_client.table("sessions").upsert(row, on_conflict="id").execute()
+        result = _supabase_client.table("sessions").upsert(row, on_conflict="id").execute()
+        log.info(f"Supabase save OK for session {session.id[:8]} — rows affected: {len(result.data) if result.data else 0}")
     except Exception as e:
-        log.warning(f"Supabase save failed for session {session.id}: {e}")
+        log.error(f"Supabase save FAILED for session {session.id}: {type(e).__name__}: {e}")
 
 
 async def load_supabase_sessions() -> List[Dict[str, Any]]:
@@ -1812,8 +1812,6 @@ async def startup():
                     log.warning(f"Failed to ingest {f}: {e}")
     # Item 4: Start cleanup loop (was defined but task created correctly)
     asyncio.create_task(_cleanup_loop())
-    if not _supabase_client:
-        log.warning("SUPABASE NOT CONFIGURED — sessions are in-memory only and will be lost on restart. Set SUPABASE_URL and SUPABASE_KEY env vars.")
     # Restore all persisted sessions from Supabase into the in-memory store
     if _supabase_client:
         try:
@@ -1846,8 +1844,6 @@ async def startup():
                         deep_modules=row.get("deep_modules") or [],
                         deep_module_idx=int(row.get("deep_module_idx") or 0),
                         metadata=row.get("metadata") or {},
-                        messages=row.get("messages") or [],
-                        feedback=row.get("feedback") or {},
                     )
                     store._sessions[sid] = s
                     loaded += 1
@@ -1857,24 +1853,6 @@ async def startup():
         except Exception as e:
             log.warning(f"Failed to load Supabase sessions on startup: {e}")
     log.info("Server ready")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Flush all in-memory sessions to Supabase before the process exits."""
-    if not _supabase_client:
-        return
-    log.info("Shutdown: flushing in-memory sessions to Supabase...")
-    saved = 0
-    for _sess in store._sessions.values():
-        try:
-            _supabase_client.table("sessions").upsert(
-                _session_to_supabase_row(_sess), on_conflict="id"
-            ).execute()
-            saved += 1
-        except Exception as _e:
-            log.warning(f"Shutdown save failed for {_sess.id}: {_e}")
-    log.info(f"Shutdown: saved {saved} sessions to Supabase")
 
 
 async def _cleanup_loop():
@@ -3468,8 +3446,6 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                                 deep_modules=row.get("deep_modules") or [],
                                 deep_module_idx=int(row.get("deep_module_idx") or 0),
                                 metadata=row.get("metadata") or {},
-                                messages=row.get("messages") or [],
-                                feedback=row.get("feedback") or {},
                             )
                             store._sessions[session_id] = s
                             session = s
@@ -3510,14 +3486,6 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
 
     except WebSocketDisconnect:
         log.info(f"WS disconnected: {session_id}")
-        _disc_sess = store.get(session_id)
-        if _disc_sess and _supabase_client:
-            try:
-                _supabase_client.table("sessions").upsert(
-                    _session_to_supabase_row(_disc_sess), on_conflict="id"
-                ).execute()
-            except Exception as _e:
-                log.warning(f"Disconnect save failed for {session_id}: {_e}")
     except Exception as e:
         log.error(f"WS error: {e}")
         try:
@@ -3842,6 +3810,110 @@ async def admin_session_report(session_id: str, request: Request):
         "session_id": session_id,
         "generated_at": datetime.utcnow().isoformat(),
     }
+
+# ===================================================================
+# SUPABASE DEBUG ENDPOINT
+# ===================================================================
+
+@app.get("/admin/api/debug/supabase")
+async def debug_supabase(request: Request):
+    """Verify Supabase connectivity, schema, and latest saved data."""
+    _check_admin(request)
+
+    EXPECTED_COLUMNS = [
+        "id", "created_at", "completed_at", "stage", "client_type", "fit",
+        "contact_name", "contact_email", "company_name",
+        "api_cost_usd", "api_calls", "calendly_clicked",
+        "snapshot_batch", "deep_module_idx", "synthesis_text",
+        "flags", "snapshot_answers", "deep_answers", "qual_data",
+        "deep_modules", "metadata", "feedback",
+    ]
+
+    if not _supabase_client:
+        return JSONResponse({"ok": False, "error": "Supabase not configured — check SUPABASE_URL and SUPABASE_KEY env vars"})
+
+    # 1. Connectivity + row count
+    try:
+        count_result = _supabase_client.table("sessions").select("id", count="exact").execute()
+        total_rows = count_result.count if hasattr(count_result, "count") else len(count_result.data or [])
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Cannot reach sessions table: {e}"})
+
+    # 2. Fetch latest row and check which columns have data
+    latest = None
+    missing_columns = []
+    column_coverage = {}
+    try:
+        result = _supabase_client.table("sessions").select("*").order("created_at", desc=True).limit(1).execute()
+        if result.data:
+            latest = result.data[0]
+            for col in EXPECTED_COLUMNS:
+                val = latest.get(col)
+                present = val is not None and val != "" and val != {} and val != []
+                column_coverage[col] = "OK" if present else "empty/null"
+            missing_columns = [col for col in EXPECTED_COLUMNS if col not in latest]
+        else:
+            column_coverage = {col: "no rows yet" for col in EXPECTED_COLUMNS}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Failed to fetch latest row: {e}"})
+
+    # 3. Test write + delete (round-trip)
+    test_id = f"__debug_test_{uuid.uuid4().hex[:8]}__"
+    write_ok = False
+    try:
+        _supabase_client.table("sessions").insert({
+            "id": test_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "stage": "intake",
+            "client_type": "unknown",
+            "fit": "unknown",
+            "contact_name": "debug-test",
+            "contact_email": "debug@test.com",
+            "company_name": "debug",
+            "api_cost_usd": 0.0,
+            "api_calls": 0,
+            "calendly_clicked": False,
+            "snapshot_batch": 0,
+            "deep_module_idx": 0,
+            "synthesis_text": "",
+            "flags": [],
+            "snapshot_answers": {},
+            "deep_answers": {},
+            "qual_data": {},
+            "deep_modules": [],
+            "metadata": {},
+            "feedback": {},
+        }).execute()
+        _supabase_client.table("sessions").delete().eq("id", test_id).execute()
+        write_ok = True
+    except Exception as e:
+        write_ok = False
+        return JSONResponse({
+            "ok": False,
+            "error": f"Write test failed — likely RLS blocking inserts. Error: {e}",
+            "fix": "In Supabase dashboard: Authentication → Policies → sessions table → disable RLS, OR use the service_role key in SUPABASE_KEY",
+            "total_rows": total_rows,
+        })
+
+    return {
+        "ok": True,
+        "total_sessions_in_supabase": total_rows,
+        "write_test": "PASS" if write_ok else "FAIL",
+        "missing_table_columns": missing_columns,
+        "latest_session_column_coverage": column_coverage,
+        "latest_session_id": latest.get("id") if latest else None,
+        "latest_session_contact": {
+            "name": latest.get("contact_name") if latest else None,
+            "email": latest.get("contact_email") if latest else None,
+            "company": latest.get("company_name") if latest else None,
+        } if latest else None,
+        "latest_session_answers_summary": {
+            "qual_data_keys": list((latest.get("qual_data") or {}).keys()) if latest else [],
+            "snapshot_answer_keys": list((latest.get("snapshot_answers") or {}).keys()) if latest else [],
+            "deep_answer_keys": list((latest.get("deep_answers") or {}).keys()) if latest else [],
+        } if latest else None,
+    }
+
 
 # ===================================================================
 # SSE STREAMING ENDPOINT (Item 24)
