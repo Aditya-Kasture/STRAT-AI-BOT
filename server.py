@@ -3407,6 +3407,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 session.company_name = msg.get("company", "")
                 session.stage = Stage.CLASSIFY
                 log.info(f"Intake: {session.contact_name} / {session.contact_email} / {session.company_name}")
+                # Persist the lead to Supabase IMMEDIATELY so the contact is captured
+                # the moment they submit — even if they drop off before any chat reply,
+                # or the classification LLM call below fails. (await, not fire-and-forget,
+                # so write errors surface in the logs right here.)
+                await save_to_supabase(session)
                 # Send initial classification message
                 result = await handle_message(
                     session,
@@ -3621,6 +3626,17 @@ async def sessions_by_email(email: str):
 
 @app.get("/api/health")
 async def health():
+    # Lightweight Supabase reachability probe (no auth needed) so persistence
+    # problems are visible on the live domain without logging into /admin.
+    supabase_status = "not_configured"
+    supabase_rows = None
+    if _supabase_client:
+        try:
+            r = _supabase_client.table("sessions").select("id", count="exact").limit(1).execute()
+            supabase_rows = r.count if hasattr(r, "count") else None
+            supabase_status = "connected"
+        except Exception as e:
+            supabase_status = f"error: {type(e).__name__}: {e}"
     return {
         "status": "ok",
         "rag_ready": rag.ready,
@@ -3628,6 +3644,9 @@ async def health():
         "llm_model": LLM_MODEL,
         "active_sessions": len(store._sessions),
         "has_anthropic_key": bool(ANTHROPIC_API_KEY),
+        "has_supabase_env": bool(SUPABASE_URL and SUPABASE_KEY),
+        "supabase": supabase_status,
+        "supabase_total_rows": supabase_rows,
     }
 
 
