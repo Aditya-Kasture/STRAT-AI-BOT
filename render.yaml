@@ -3,7 +3,7 @@ services:
     name: strat-ai-bot
     runtime: python
     plan: starter
-    buildCommand: pip install -r requirements.txt
+    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt
     startCommand: python server.py
     healthCheckPath: /api/health
     envVars:
@@ -45,3 +45,5 @@ services:
         sync: false
       - key: STRAT_AI_CONTACT_EMAIL
         sync: false
+      - key: WHISPER_MODEL
+        value: tiny

@@ -7,3 +7,4 @@ python-docx>=1.1.0
 supabase>=2.0.0
 storage3<0.9
 websockets>=13.0
+openai-whisper>=20231117
