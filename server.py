@@ -89,6 +89,7 @@ except ImportError:
     HAS_WHISPER = False
 
 _whisper_model = None  # load once so we dont reload every time
+_whisper_lock = None   # threading lock — model.transcribe() is NOT thread-safe
 
 # Initialise Supabase client once at startup (only if credentials are present)
 _supabase_client = None
@@ -2107,9 +2108,6 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
 #voice-state.transcribing{color:#5bb8f5;border:1px solid rgba(91,184,245,.3)}
 #voice-state.speaking{color:#fbbf24;border:1px solid rgba(251,191,36,.3)}
 #voice-privacy{font-size:10px;color:#445a7a;width:100%;line-height:1.4;margin:0}
-#voice-extra{width:100%;display:none;flex-wrap:wrap;gap:12px;align-items:center;font-size:11px;color:#557799}
-#voice-extra label{display:flex;align-items:center;gap:4px;cursor:pointer}
-#silence-ms{width:90px;vertical-align:middle}
 /* Textarea — auto-resizes, 1-row default, grows as user types */
 #msg-input{
   flex:1;
@@ -2435,8 +2433,6 @@ textarea::placeholder{color:#445}
       </label>
       <!-- Continuous hands-free label — only shown when voice is on -->
       <label id="continuous-wrap" style="display:none" class="voice-toggle-label"><input type="checkbox" id="continuous-toggle"> Continuous</label>
-      <!-- Barge-in toggle — only shown in continuous mode -->
-      <label id="barge-wrap" style="display:none" class="voice-toggle-label"><input type="checkbox" id="barge-toggle" checked> Barge-in</label>
       <!-- Google Meet-style animated bars — visible while mic is listening or bot is speaking -->
       <div id="audio-wave" aria-hidden="true">
         <div class="wave-bar"></div>
@@ -2449,11 +2445,6 @@ textarea::placeholder{color:#445}
       <span id="voice-state" class="idle" style="display:none"></span>
       <span id="voice-status"></span>
       <p id="voice-privacy" style="display:none;font-size:10px;color:#445a7a;line-height:1.4">Mic only turns on when you tap the mic button.</p>
-      <div id="voice-extra" style="display:none;flex-wrap:wrap;gap:12px;align-items:center;font-size:11px;color:#557799">
-        <span>Pause before send:</span>
-        <input type="range" id="silence-ms" min="800" max="2500" step="100" value="1200">
-        <span id="silence-ms-val">1.2s</span>
-      </div>
     </div>
     <div id="input-row">
       <!-- Text input — single row by default, grows as needed -->
@@ -2637,8 +2628,16 @@ let streamText='';
 // -------- Global Variables --------
 
 var voiceOn = false;          // main voice toggle
-var continuousOn = false;     // hands free mode
-var bargeInOn = true;         // interrupt bot while talking
+// instead of storing continuousOn as an independent variable that has to be
+// manually kept in sync with both voiceOn and the checkbox, derive it on demand.
+// this means it can never drift out of sync with what the UI shows. (Issue 13)
+function getContinuousOn() {
+  var cb = document.getElementById('continuous-toggle');
+  return voiceOn && !!(cb && cb.checked);
+}
+// keep the old variable for compatibility with the handful of places that
+// check continuousOn directly — we'll also fix those reads below
+var continuousOn = false;
 var botSpeaking = false;
 var continuousActive = false; // true when always-listening loop running
 var recognizer = null;        // chrome web speech api object — used when Whisper isn't available
@@ -2650,11 +2649,12 @@ var recordStream = null;      // The microphone stream
 var recordTimer = null;       // timer to auto stop recording after it reaches max length
 var preferBrowserMic = false; // if whisper fails use chrome instead
 var serverTranscribeOk = false; // Makes sure that the server can do transcription
+var healthCheckDone = false;    // true once /api/health has returned
 var maxRecordSec = 30;        // cap ptt recording length
 var pttActive = false;        // push to talk in progress
 
 // VAD variables just took a blind guess with the numbers.
-var vadSilenceMs = 1200;      // how long quiet before we submit
+var vadSilenceMs = 1200;      // how long quiet before we submit — fixed value, no longer user-adjustable
 var vadMinSpeechMs = 500;     // dont submit super short blips
 var vadThreshold = 0.018;     // mic volume cutoff - might need tweaking
 var vadAnim = null;           // animation frame for VAD
@@ -2668,12 +2668,6 @@ var speechStartTime = 0;      // timestamp of when current speech chuck started
 var lastLoudTime = 0;         // timestamp 
 var browserSilenceTimer = null; // timer to detect silence when using browser mic in continuous mode
 var lastHeardTime = 0;        // last time the browser speech regonizer hear anything
-
-// Lets the user start talking WHILE the bot is still speaking.
-var bargeMonitor = null;
-var bargeStream = null;
-var bargeCtx = null;
-var bargeAnalyser = null;
 
 // quick check for browser support 
 var hasMediaRecorder = typeof MediaRecorder != 'undefined' && navigator.mediaDevices;
@@ -2695,6 +2689,13 @@ function showVoiceStatus(state, msg) {
   if (msg != undefined) {
     document.getElementById('voice-status').textContent = msg || '';
   }
+  // keep the mic button tooltip and aria state in sync so its always obvious
+  // what tapping it will do at any given moment
+  if (micBtn) {
+    var isActive = (state === 'listening' || state === 'recording');
+    micBtn.title = isActive ? 'Click to stop' : 'Click to start talking';
+    micBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  }
 }
 
 // show/hide continuous toggle and privacy text when voice mode changes
@@ -2704,15 +2705,16 @@ function fixVoiceToggles() {
   var lbl = document.getElementById('voice-toggle-lbl');
   if (lbl) lbl.classList.toggle('voice-on', on);
   document.getElementById('continuous-wrap').style.display = on ? '' : 'none';
-  document.getElementById('barge-wrap').style.display = (on && continuousOn) ? '' : 'none';
   document.getElementById('voice-privacy').style.display = on ? 'block' : 'none';
-  document.getElementById('voice-extra').style.display = (on && continuousOn) ? 'flex' : 'none';
 }
 
-// ask server if whisper is set up
+// ask server if whisper is set up — healthCheckDone gates the mic button
+// so if the user clicks before this returns we show a brief loading message
+// instead of silently falling back to browser SR for the whole session
 fetch('/api/health').then(function(r) { return r.json(); }).then(function(d) {
   serverTranscribeOk = !!d.has_transcribe;
-}).catch(function() {});
+  healthCheckDone = true;
+}).catch(function() { healthCheckDone = true; });
 
 if (!hasMediaRecorder && !SpeechRec) {
   document.getElementById('mic-btn').style.display = 'none';
@@ -2722,16 +2724,6 @@ if (!hasMediaRecorder && !SpeechRec && !window.speechSynthesis) {
 }
 
 // stops the animation frame loop used for continuous-mode / push-to-talk VAD.
-// IMPORTANT: this should NOT touch bargeMonitor! that's the always-on barge-in
-// listener's loop and it has its own start/stop functions (startBargeListen /
-// stopBargeListen). it used to get killed in here too because it shared the
-// same bargeMonitor variable, and since speakBotReply calls stopContinuousMode
-// (which calls this) every single time the bot starts talking, that was
-// silently murdering the auto barge-in loop on literally every bot reply.
-// after that happened bargeListening was still stuck at true so nothing knew
-// to restart it, so the only way left to interrupt the bot was clicking the
-// mic button by hand. moving the barge-in loop's lifecycle fully out of this
-// function fixes it.
 function stopVadLoop() {
   if (vadAnim) {
     cancelAnimationFrame(vadAnim);
@@ -2743,131 +2735,6 @@ function stopVadLoop() {
   }
 }
 
-// Shuts down everything related to the barge-in mic and volume monitoring
-// Stops the loop, stops the mic tracks, and closes the audio context so we dont leak resources
-function stopBargeMonitor() {
-  if (bargeMonitor) {
-    cancelAnimationFrame(bargeMonitor);
-    bargeMonitor = null;
-  }
-  if (bargeStream) {
-    bargeStream.getTracks().forEach(function(t) { t.stop(); });
-    bargeStream = null;
-  }
-  if (bargeCtx) {
-    try { bargeCtx.close(); } catch (e) {}
-    bargeCtx = null;
-  }
-  bargeAnalyser = null;
-}
-
-// Starts listening on a separate mic stream WHILE the bot is talking, so the user can interrupt it.
-// If it hearsloud audio for a bunch of frames in a row, it assumes the user is trying to say something and stops the bot, stops the barge monitor, and starts the continuous mode.
-
-// bargeListening = true while the always-on barge stream is open
-var bargeListening = false;
-
-// Opens the mic once and keeps it silently monitoring volume.
-// Called as soon as barge-in + voice mode are both enabled so there's
-// zero latency when the client wants to interrupt — no getUserMedia delay at speak time.
-function startBargeListen() {
-  if (bargeListening || !bargeInOn || !voiceOn) return;
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-    if (!bargeInOn || !voiceOn) {
-      stream.getTracks().forEach(function(t) { t.stop(); });
-      return;
-    }
-    bargeStream = stream;
-    bargeCtx = new (window.AudioContext || window.webkitAudioContext)();
-    var src = bargeCtx.createMediaStreamSource(stream);
-    bargeAnalyser = bargeCtx.createAnalyser();
-    bargeAnalyser.fftSize = 2048;
-    src.connect(bargeAnalyser);
-    bargeListening = true;
-
-    var loudFrames = 0;
-
-    // how long to wait after the bot starts talking before we even start
-    // checking for barge-in. this is super important because the first
-    // syllable of TTS playback creates a loud burst that bleeds back into
-    // the mic and would instantly trigger a false barge-in without this.
-    // 600ms is enough to let the TTS onset settle down on basically any speaker.
-    var bargeGraceUntil = 0;
-
-    function bargeTick() {
-      if (!bargeInOn || !voiceOn || !bargeAnalyser) {
-        stopBargeListen();
-        return;
-      }
-      if (botSpeaking && !pttActive) {
-        // set (or reset) the grace window every time we notice the bot is
-        // speaking and the timer has expired -- this catches mid-reply barge
-        // attempts but still blocks the loud onset burst at the start
-        if (bargeGraceUntil === 0) {
-          bargeGraceUntil = Date.now() + 600;
-        }
-
-        if (Date.now() < bargeGraceUntil) {
-          // still inside the grace window -- ignore everything, the TTS
-          // onset bleed would trigger us here basically every single time
-          bargeMonitor = requestAnimationFrame(bargeTick);
-          return;
-        }
-
-        var rms = howLoudIsIt(bargeAnalyser);
-
-        // threshold is intentionally HIGH here. speaker bleed from a normal
-        // laptop/phone speaker typically sits around 0.02-0.04 even at loud
-        // TTS volume. a real human voice close to the mic is usually 0.08+.
-        // so 0.07 gives us a solid gap where actual speech gets through but
-        // the reflected TTS audio doesn't. the 12 consecutive frames (~200ms)
-        // means a single TTS word can't spike past it and trigger a cut.
-        if (rms > 0.07) {
-          loudFrames++;
-          if (loudFrames >= 12) {
-            window.speechSynthesis.cancel();
-            botSpeaking = false;
-            loudFrames = 0;
-            bargeGraceUntil = 0;
-            showVoiceStatus('listening', 'go ahead...');
-            showAudioWave('listening');
-            pttActive = true;
-            micListening = true;
-            startPttVadOnStream(stream);
-            startLivePreview();
-          }
-        } else {
-          loudFrames = 0;
-        }
-      } else {
-        // bot stopped talking (or pttActive kicked in) -- reset everything
-        // so the next time the bot speaks we get a fresh grace window
-        loudFrames = 0;
-        bargeGraceUntil = 0;
-      }
-      bargeMonitor = requestAnimationFrame(bargeTick);
-    }
-    bargeMonitor = requestAnimationFrame(bargeTick);
-  }).catch(function() { bargeListening = false; });
-}
-
-function stopBargeListen() {
-  bargeListening = false;
-  if (bargeMonitor) { cancelAnimationFrame(bargeMonitor); bargeMonitor = null; }
-  if (bargeStream) { bargeStream.getTracks().forEach(function(t) { t.stop(); }); bargeStream = null; }
-  if (bargeCtx) { try { bargeCtx.close(); } catch(e) {} bargeCtx = null; }
-  bargeAnalyser = null;
-}
-
-// Legacy fallback — called by speakBotReply when barge-in is on.
-// If the always-on stream is running this is a no-op.
-function startBargeMonitor() {
-  if (!bargeInOn || !voiceOn || !botSpeaking) return;
-  if (pttActive) return;      // pttTick has barge logic built in
-  if (bargeListening) return; // always-on stream already handling this
-  // Fallback: try to open the stream now (will have latency)
-  startBargeListen();
-}
 
 // completely shuts down the continuous mode
 // Stops the VAD loop, stops any in progress recordings, stops the mic stream, and closes the audio context to free resources. 
@@ -2908,8 +2775,13 @@ function stopRecordStream() {
 }
 
 function howLoudIsIt(analyser) {
-  // basic volume check - saw something like this online
-  var data = new Uint8Array(analyser.fftSize);
+  // Pre-allocate the buffer on the analyser node itself so we reuse the same
+  // array every frame instead of doing `new Uint8Array(fftSize)` ~60 times/sec.
+  // That was generating a ton of GC pressure for zero benefit.
+  if (!analyser._buf || analyser._buf.length !== analyser.fftSize) {
+    analyser._buf = new Uint8Array(analyser.fftSize);
+  }
+  var data = analyser._buf;
   analyser.getByteTimeDomainData(data);
   var sum = 0;
   for (var i = 0; i < data.length; i++) {
@@ -2917,6 +2789,25 @@ function howLoudIsIt(analyser) {
     sum = sum + v * v;
   }
   return Math.sqrt(sum / data.length);
+}
+
+// Closes any currently open VAD audio graph (audioCtx, vadStream, analyserNode)
+// before starting a new one. ALL VAD-start functions must call this first
+// or they'll orphan the old AudioContext — browsers cap at ~6 simultaneous
+// contexts. (Issues 2 & 5)
+function teardownVadAudio() {
+  stopVadLoop();
+  if (contRecorder && contRecorder.state === 'recording') {
+    try { contRecorder.stop(); } catch(e) {}
+  }
+  contRecorder = null;
+  contChunks = [];
+  if (analyserNode) { analyserNode = null; }
+  if (audioCtx) { try { audioCtx.close(); } catch(e) {} audioCtx = null; }
+  if (vadStream) {
+    vadStream.getTracks().forEach(function(t) { t.stop(); });
+    vadStream = null;
+  }
 }
 
 function pickMimeType() {
@@ -2953,9 +2844,11 @@ function uploadRecording(blob, mimeType) {
         // Show a subtle hint but keep the wave going — mic is still live
         showVoiceStatus('listening', 'listening... press Send when ready');
         showAudioWave('listening');
-        // If mic toggle is still on, immediately restart the VAD loop
+        // If mic toggle is still on, immediately restart the VAD loop.
+        // teardownVadAudio first so we don't leak the previous stream.
         if (pttActive && voiceOn) {
           micListening = true;
+          teardownVadAudio();
           startPttVad();
         }
         return;
@@ -2980,8 +2873,12 @@ function uploadRecording(blob, mimeType) {
 }
 
 function finishContRecording() {
-  if (!contRecorder || contRecorder.state != 'recording') return;
-  contRecorder.stop();
+  // capture a local ref so a concurrent ptt path that replaces the
+  // global contRecorder between our state check and the .stop() call can't
+  // cause us to stop the wrong recorder or miss stopping the old one
+  var rec = contRecorder;
+  if (!rec || rec.state != 'recording') return;
+  rec.stop();
 }
 
 function startContinuousVad() {
@@ -2989,6 +2886,7 @@ function startContinuousVad() {
     startBrowserContinuous();
     return;
   }
+  teardownVadAudio(); // close any leftover stream/context before opening a new one
   contMime = pickMimeType();
   navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
     if (!continuousActive) {
@@ -3019,13 +2917,16 @@ function startContinuousVad() {
         lastLoudTime = now;
         if (!contRecorder || contRecorder.state != 'recording') {
           contChunks = [];
-          contRecorder = new MediaRecorder(stream, { mimeType: contMime });
+          var thisRecorder = new MediaRecorder(stream, { mimeType: contMime });
+          contRecorder = thisRecorder;
           contRecorder.ondataavailable = function(e) {
             if (e.data.size > 0) contChunks.push(e.data);
           };
           contRecorder.onstop = function() {
+            // use the local ref so a concurrent ptt start that replaced
+            // contRecorder doesn't corrupt our blob — this was Issue 4
+            if (contRecorder === thisRecorder) contRecorder = null;
             var blob = new Blob(contChunks, { type: contMime });
-            contRecorder = null;
             if (blob.size < 100) {
               if (continuousActive) vadAnim = requestAnimationFrame(vadTick);
               return;
@@ -3068,15 +2969,20 @@ function uploadRecordingContinuous(blob, mimeType, onDone) {
       if (result.ok && result.data.text) {
         // Append confirmed Whisper text — this is the accurate version
         var word = result.data.text.trim();
-        var existing = inp.value.trim();
-        // Strip any interim preview text that may have been written by livePreviewRec
-        // by restoring from whisperConfirmedText then appending the new chunk
+        // Build on top of pre-existing text + previously confirmed chunks
         whisperConfirmedText = whisperConfirmedText
           ? whisperConfirmedText + ' ' + word
           : word;
-        inp.value = whisperConfirmedText;
+        // Reconstruct input: pre-existing text (never touched) + new confirmed speech
+        var full = preVoiceText
+          ? preVoiceText + ' ' + whisperConfirmedText
+          : whisperConfirmedText;
+        inp.value = full;
         inp.style.height = 'auto';
         inp.style.height = Math.min(inp.scrollHeight, 140) + 'px';
+        // Restart livePreviewRec with a fresh instance so its audio buffer is
+        // wiped — prevents it re-emitting interim text for audio Whisper already wrote
+        resetLivePreview();
       }
       showVoiceStatus('listening', 'listening... press Send when ready');
       showAudioWave('listening');
@@ -3100,8 +3006,10 @@ function startPttVad() {
     }
     return;
   }
+  teardownVadAudio(); // close any leftover stream/context before opening a new one
   contMime = pickMimeType();
   navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+    micBtnBusy = false; // getUserMedia resolved — button can be clicked again
     if (!pttActive) {
       stream.getTracks().forEach(function(t) { t.stop(); });
       return;
@@ -3125,13 +3033,14 @@ function startPttVad() {
         lastLoudTime = now;
         if (!contRecorder || contRecorder.state != 'recording') {
           contChunks = [];
-          contRecorder = new MediaRecorder(stream, { mimeType: contMime });
+          var thisRecorder = new MediaRecorder(stream, { mimeType: contMime });
+          contRecorder = thisRecorder;
           contRecorder.ondataavailable = function(e) {
             if (e.data.size > 0) contChunks.push(e.data);
           };
           contRecorder.onstop = function() {
+            if (contRecorder === thisRecorder) contRecorder = null;
             var blob = new Blob(contChunks, { type: contMime });
-            contRecorder = null;
             if (blob.size < 100) {
               if (pttActive) vadAnim = requestAnimationFrame(pttTick);
               return;
@@ -3154,66 +3063,11 @@ function startPttVad() {
     }
     vadAnim = requestAnimationFrame(pttTick);
   }).catch(function() {
+    micBtnBusy = false;
     showAudioWave(false);
     micListening = false;
     showVoiceStatus('idle', 'mic permission denied');
   });
-}
-
-// Same as startPttVad but uses an already-open stream (e.g. from barge-in monitor).
-// Avoids a second getUserMedia call so recording starts instantly.
-function startPttVadOnStream(stream) {
-  if (!hasMediaRecorder || !serverTranscribeOk || preferBrowserMic) {
-    if (recognizer) {
-      recognizer.continuous = true;
-      recognizer.interimResults = true;
-      try { recognizer.start(); } catch(e) {}
-    }
-    return;
-  }
-  contMime = pickMimeType();
-  // Treat the barge stream as the vadStream so stopContinuousMode cleans it up
-  vadStream = stream;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  var src = audioCtx.createMediaStreamSource(stream);
-  analyserNode = audioCtx.createAnalyser();
-  analyserNode.fftSize = 2048;
-  src.connect(analyserNode);
-  micListening = true;
-  showAudioWave('listening');
-  showVoiceStatus('listening', 'listening... press Send when ready');
-
-  function pttTick() {
-    if (!pttActive || !analyserNode) return;
-    var rms = howLoudIsIt(analyserNode);
-    var now = Date.now();
-    if (rms > vadThreshold) {
-      lastLoudTime = now;
-      if (!contRecorder || contRecorder.state != 'recording') {
-        contChunks = [];
-        contRecorder = new MediaRecorder(stream, { mimeType: contMime });
-        contRecorder.ondataavailable = function(e) { if (e.data.size > 0) contChunks.push(e.data); };
-        contRecorder.onstop = function() {
-          var blob = new Blob(contChunks, { type: contMime });
-          contRecorder = null;
-          if (blob.size < 100) { if (pttActive) vadAnim = requestAnimationFrame(pttTick); return; }
-          uploadRecordingContinuous(blob, contMime, function() {
-            if (pttActive) vadAnim = requestAnimationFrame(pttTick);
-          });
-        };
-        contRecorder.start();
-        speechStartTime = now;
-        showVoiceStatus('recording', 'hearing you...');
-      }
-    } else if (contRecorder && contRecorder.state == 'recording') {
-      if (now - lastLoudTime > vadSilenceMs && now - speechStartTime > vadMinSpeechMs) {
-        finishContRecording();
-        return;
-      }
-    }
-    vadAnim = requestAnimationFrame(pttTick);
-  }
-  vadAnim = requestAnimationFrame(pttTick);
 }
 
 function startBrowserContinuous() {
@@ -3226,6 +3080,9 @@ function startBrowserContinuous() {
   recognizer.interimResults = true;
   showAudioWave('listening');
   showVoiceStatus('listening', 'speak when ready');
+  // Snapshot the box so continuous mode never overwrites existing text
+  preVoiceText = inp.value.trim();
+  whisperConfirmedText = '';
   try { recognizer.start(); } catch (e) {}
 
   // No silence-auto-send timer. Text accumulates in the box until Send is pressed.
@@ -3240,14 +3097,19 @@ function startContinuousMode() {
   startContinuousVad();
 }
 
-// listenAgainAfterBot — intentionally does nothing now.
-// The mic should never turn on automatically after the bot finishes speaking.
-// The client starts the mic themselves by clicking the mic button.
-// Barge-in still works (it fires mid-speech via startBargeMonitor) but
-// the auto-restart after the bot goes quiet is disabled.
+// listenAgainAfterBot — mic stays off after the bot finishes speaking UNLESS
+// the client has explicitly opted into "Continuous" mode via the toggle. That
+// toggle is the user-facing opt-in mentioned below; use it, don't auto-restart
+// outside of it.
 function listenAgainAfterBot() {
-  // no-op — mic stays off until the client turns it on
+  if (continuousOn) {
+    startContinuousMode();
+  }
 }
+
+// incremented every time we explicitly stop the recognizer so stale onend
+// callbacks don't restart it after the user has already clicked Stop (Issue 11)
+var recognizerSession = 0;
 
 // chrome/edge built in speech recognition (fallback if whisper broken)
 if (SpeechRec) {
@@ -3268,15 +3130,15 @@ if (SpeechRec) {
     }
     if (interim != '' || final != '') lastHeardTime = Date.now();
 
-    // anchor all new speech onto whatever was already in the box — used to
-    // just set inp.value = interim/final which stomped any existing text.
-    // whisperConfirmedText tracks everything that's been locked in so far
-    // (either Whisper chunks or final browser SR results); interim is shown
-    // on top of that as a live preview, never saved until it goes final.
+    // anchor all new speech onto whatever was already in the box before the
+    // mic turned on (preVoiceText) plus anything confirmed so far this session
+    // (whisperConfirmedText). Interim is shown on top as a live preview and
+    // is never saved until it goes final.
     if (interim != '') {
-      inp.value = whisperConfirmedText
-        ? whisperConfirmedText + ' ' + interim
-        : interim;
+      var confirmedSoFar = preVoiceText
+        ? (whisperConfirmedText ? preVoiceText + ' ' + whisperConfirmedText : preVoiceText)
+        : whisperConfirmedText;
+      inp.value = confirmedSoFar ? confirmedSoFar + ' ' + interim : interim;
     }
 
     if (final != '') {
@@ -3285,7 +3147,10 @@ if (SpeechRec) {
       whisperConfirmedText = whisperConfirmedText
         ? whisperConfirmedText + ' ' + locked
         : locked;
-      inp.value = whisperConfirmedText;
+      var full = preVoiceText
+        ? preVoiceText + ' ' + whisperConfirmedText
+        : whisperConfirmedText;
+      inp.value = full;
       inp.style.height = 'auto';
       inp.style.height = Math.min(inp.scrollHeight, 140) + 'px';
       inp.focus();
@@ -3312,6 +3177,18 @@ if (SpeechRec) {
   };
 
   recognizer.onend = function() {
+    // Capture the session token at the time onend fires — if it no longer
+    // matches the current recognizerSession then stopBrowserListening() was
+    // called after this recognizer.stop() and we should NOT restart.
+    // This prevents the STOP path from immediately re-opening the mic when
+    // onend fires async after the user has already clicked Stop. (Issue 11)
+    var mySession = recognizer._endSession;
+    if (mySession !== undefined && mySession !== recognizerSession) {
+      // stale callback — the user stopped the mic; don't restart
+      micListening = false;
+      showAudioWave(false);
+      return;
+    }
     // Keep the recognizer running if either continuous mode or PTT toggle is active
     if ((continuousActive && continuousOn) || pttActive) {
       try { recognizer.start(); } catch (e) {}
@@ -3327,12 +3204,20 @@ if (SpeechRec) {
 
 function startBrowserListening() {
   if (!recognizer) return;
+  // Snapshot whatever is already in the box so SR never overwrites it
+  preVoiceText = inp.value.trim();
+  whisperConfirmedText = '';
   try { recognizer.start(); } catch (e) {}
 }
 
 function stopBrowserListening() {
   if (!recognizer) return;
+  recognizerSession++;                      // invalidate any pending onend callback
+  recognizer._endSession = recognizerSession;
   try { recognizer.stop(); } catch (e) {}
+  // Clear voice session anchors — re-snapshotted on next startBrowserListening
+  preVoiceText = '';
+  whisperConfirmedText = '';
 }
 
 // ---------------------------------------------------------------
@@ -3345,14 +3230,34 @@ function stopBrowserListening() {
 
 // Text confirmed by Whisper so far — used to anchor interim display
 var whisperConfirmedText = '';
+// Text that was already in the input box when the mic was turned on —
+// never overwritten by live preview or Whisper chunks
+var preVoiceText = '';
 
-function startLivePreview() {
+// Spawn a fresh livePreviewRec instance without touching preVoiceText or
+// whisperConfirmedText. Called by uploadRecordingContinuous after Whisper
+// commits a chunk so the browser SR buffer is wiped and it starts clean —
+// this prevents it re-emitting interim text for audio Whisper already wrote.
+function resetLivePreview() {
+  if (!livePreviewRec) return; // preview isn't running, nothing to reset
+  try { livePreviewRec.stop(); } catch(e) {}
+  livePreviewRec = null;
+  // Re-attach with a brand-new instance so the browser SR audio buffer is
+  // completely fresh. buildLivePreviewInstance() does not touch the anchors.
+  buildLivePreviewInstance();
+}
+
+// Creates and starts a livePreviewRec instance. Separated from startLivePreview
+// so resetLivePreview can call it without re-snapshotting the anchors.
+function buildLivePreviewInstance() {
   if (!SpeechRec || preferBrowserMic || !serverTranscribeOk) return;
-  stopLivePreview();
+  if (!pttActive && !continuousActive) return; // mic is off, don't restart
   livePreviewRec = new SpeechRec();
   livePreviewRec.continuous = true;
   livePreviewRec.interimResults = true;
   livePreviewRec.lang = 'en-US';
+
+  var thisPreview = livePreviewRec;
 
   livePreviewRec.onresult = function(event) {
     var interim = '';
@@ -3363,29 +3268,39 @@ function startLivePreview() {
       // Ignore final results — Whisper handles the accurate version
     }
     if (interim) {
-      // Show confirmed text + live interim in a different style so the
-      // client can tell what's confirmed vs still being recognised
-      inp.value = whisperConfirmedText
-        ? whisperConfirmedText + ' ' + interim
-        : interim;
+      // Build display value: pre-existing text + Whisper-confirmed chunks + live interim
+      // Pre-existing text is never touched — only new speech is appended
+      var confirmed = preVoiceText
+        ? (whisperConfirmedText ? preVoiceText + ' ' + whisperConfirmedText : preVoiceText)
+        : whisperConfirmedText;
+      inp.value = confirmed ? confirmed + ' ' + interim : interim;
       inp.style.height = 'auto';
       inp.style.height = Math.min(inp.scrollHeight, 140) + 'px';
     }
   };
 
   livePreviewRec.onerror = function(e) {
-    // no-speech is normal — just ignore it
     if (e.error !== 'no-speech') stopLivePreview();
   };
 
   livePreviewRec.onend = function() {
-    // Restart as long as the mic is still active
+    // Stale instance — a reset or stop already replaced/nulled livePreviewRec
+    if (livePreviewRec !== thisPreview) return;
     if (pttActive || continuousActive) {
-      try { livePreviewRec.start(); } catch(e) {}
+      try { thisPreview.start(); } catch(e) {}
     }
   };
 
   try { livePreviewRec.start(); } catch(e) {}
+}
+
+function startLivePreview() {
+  if (!SpeechRec || preferBrowserMic || !serverTranscribeOk) return;
+  stopLivePreview(); // clears anchors + any running instance
+  // Snapshot what's already in the box so we never rewrite it
+  preVoiceText = inp.value.trim();
+  whisperConfirmedText = '';
+  buildLivePreviewInstance();
 }
 
 function stopLivePreview() {
@@ -3393,30 +3308,15 @@ function stopLivePreview() {
     try { livePreviewRec.stop(); } catch(e) {}
     livePreviewRec = null;
   }
-  // DON'T reset whisperConfirmedText to '' here! Used to do that, and it
-  // caused a bug: stopping the mic wiped this var, but NOT the actual text
-  // box -- so the text the client already said was still sitting there on
-  // screen. Then the next time they pressed the mic and started talking
-  // again, onresult would do
-  //   inp.value = whisperConfirmedText ? whisperConfirmedText+' '+interim : interim
-  // and since whisperConfirmedText was now '', it just stomped inp.value
-  // with the brand new interim text, erasing everything they'd said before.
-  // Keep this synced to whatever's actually in the box instead, so when
-  // listening resumes it anchors onto the existing text instead of nuking it.
-  whisperConfirmedText = inp.value.trim();
+  // Clear the voice session anchors — re-snapshotted fresh on next startLivePreview
+  preVoiceText = '';
+  whisperConfirmedText = '';
 }
-
-// ===================================================================
-// MIC BUTTON — toggle on/off (NOT hold-to-speak)
-// Clicking once starts listening, clicking again stops it.
-// This feels like OpenAI's voice UI — one tap in, one tap out.
-// ===================================================================
 
 // Helpers to show/hide the Google Meet-style audio wave animation
 function showAudioWave(mode) {
   // mode = 'listening' | 'speaking' | false
   var wave = document.getElementById('audio-wave');
-  var micBtn = document.getElementById('mic-btn');
   if (!wave) return;
   if (mode === 'listening') {
     wave.classList.add('active');
@@ -3431,7 +3331,13 @@ function showAudioWave(mode) {
   }
 }
 
+// Single declaration — do NOT add a second var micBtn anywhere else.
+// showAudioWave and the click handler both close over this.
 var micBtn = document.getElementById('mic-btn');
+
+// mutex flag — true while getUserMedia is in flight so rapid double-clicks
+// can't start two parallel streams before the first one resolves (Issue 8)
+var micBtnBusy = false;
 
 if (micBtn) {
   // Single click toggles mic on or off — no holding required
@@ -3440,29 +3346,9 @@ if (micBtn) {
     // Can't use mic if WebSocket isn't open
     if (!ws || ws.readyState !== 1) return;
 
-    // Barge-in: if the bot is currently speaking and barge-in is on,
-    // clicking the mic button stops the bot immediately and starts listening.
-    // This bypasses all other guards — the client is taking control.
-    if (botSpeaking && bargeInOn && voiceOn) {
-      window.speechSynthesis.cancel();
-      botSpeaking = false;
-      // use stopBargeListen() (not the old stopBargeMonitor()) so bargeListening
-      // actually gets set back to false -- otherwise the always-on listener
-      // thinks it's still running next time the bot talks and never reopens
-      stopBargeListen();
-      showAudioWave('listening');
-      showVoiceStatus('listening', 'listening... tap again to stop');
-      pttActive = true;
-      micListening = true;
-      if (hasMediaRecorder && serverTranscribeOk && !preferBrowserMic) {
-        startPttVad();
-      } else if (recognizer) {
-        recognizer.continuous = true;
-        recognizer.interimResults = true;
-        try { recognizer.start(); } catch(e) {}
-      }
-      return;
-    }
+    // Bot is speaking — barge-in/interrupt has been removed, so just ignore
+    // clicks until it finishes rather than starting to record over it.
+    if (botSpeaking) return;
 
     // Normal guard — block if bot is still generating a response
     if (document.getElementById('send-btn').disabled) return;
@@ -3470,6 +3356,7 @@ if (micBtn) {
     // --- STOP listening (second click) ---
     if (micListening) {
       pttActive = false;
+      micBtnBusy = false; // clear the mutex so the button works again immediately
 
       // Stop the VAD loop and any in-progress recording
       stopVadLoop();
@@ -3497,6 +3384,17 @@ if (micBtn) {
 
     // --- START listening (first click) ---
 
+    // block re-entry while getUserMedia is still in flight
+    if (micBtnBusy) return;
+
+    // if the health check hasn't come back yet, tell the user to try in a second
+    // rather than silently falling back to browser SR for the whole session
+    if (!healthCheckDone) {
+      showVoiceStatus('idle', 'starting up — try again in a moment');
+      return;
+    }
+    micBtnBusy = true;
+
     // Stop continuous mode if it was running so PTT takes over cleanly
     if (continuousActive) {
       stopContinuousMode();
@@ -3520,9 +3418,11 @@ if (micBtn) {
     } else {
       micListening = false;
       pttActive = false;
+      micBtnBusy = false;
       showAudioWave(false);
       showVoiceStatus('idle', 'voice not supported here');
     }
+    // micBtnBusy is cleared inside getUserMedia's .then() and .catch() in startPttVad
   };
 }
 
@@ -3532,19 +3432,19 @@ document.getElementById('voice-mode-toggle').onchange = function() {
   if (!voiceOn) {
     window.speechSynthesis.cancel();
     botSpeaking = false;
-    stopBargeListen();
-    stopBargeMonitor();
     stopContinuousMode();
+    // also kill PTT state — stopContinuousMode resets micListening and
+    // continuousActive but NOT pttActive, so a mid-recording PTT session
+    // would keep chunking audio silently after voice is turned off
+    pttActive = false;
+    micBtnBusy = false;
     continuousOn = false;
     document.getElementById('continuous-toggle').checked = false;
-  } else if (bargeInOn) {
-    // Mic stream opens immediately so barge-in has zero latency
-    startBargeListen();
   }
 };
 
 document.getElementById('continuous-toggle').onchange = function() {
-  continuousOn = voiceOn && this.checked;
+  continuousOn = getContinuousOn(); // derive from DOM so it can never drift
   fixVoiceToggles();
   if (!continuousOn) {
     stopContinuousMode();
@@ -3553,20 +3453,17 @@ document.getElementById('continuous-toggle').onchange = function() {
   // The client clicks the mic button when they're ready to speak.
 };
 
-document.getElementById('barge-toggle').onchange = function() {
-  bargeInOn = this.checked;
-  if (bargeInOn && voiceOn) {
-    startBargeListen(); // open mic stream immediately — no latency when bot speaks
-  } else {
-    stopBargeListen();
-  }
-};
-
-document.getElementById('silence-ms').oninput = function() {
-  vadSilenceMs = parseInt(this.value, 10);
-  document.getElementById('silence-ms-val').textContent = (vadSilenceMs / 1000).toFixed(1) + 's';
-};
-document.getElementById('silence-ms-val').textContent = (vadSilenceMs / 1000).toFixed(1) + 's';
+// Clean up all mic streams and audio resources when the user leaves the page.
+// Without this, mobile Safari keeps the mic indicator lit after navigation,
+// and any open AudioContexts can interfere with the page when the session is resumed quickly.
+window.addEventListener('beforeunload', function() {
+  try { window.speechSynthesis.cancel(); } catch(e) {}
+  stopContinuousMode();
+  pttActive = false;
+  if (vadStream) { vadStream.getTracks().forEach(function(t) { t.stop(); }); vadStream = null; }
+  if (audioCtx) { try { audioCtx.close(); } catch(e) {} audioCtx = null; }
+  stopLivePreview();
+});
 
 // Auto-resize the textarea as the user types
 // This makes the input feel much more like a modern chat UI (like ChatGPT)
@@ -3599,44 +3496,39 @@ function speakBotReply(text) {
     return;
   }
   stopContinuousMode();
-  // NOTE TO SELF: do NOT call stopBargeMonitor() here!! i had it here before and it
-  // broke barge-in lol. heres what was happening: stopBargeMonitor() is the OLD
-  // function and it kills the bargeMonitor loop + closes the mic stream, but it
-  // does NOT set bargeListening back to false. so after the bot's first reply,
-  // bargeListening still says "true" even though the stream is actually dead.
-  // then down below when we try to restart it, startBargeMonitor() sees
-  // bargeListening = true and just goes "oh its already running, nothing to do"
-  // and bails out — except it's not actually running anymore, it's dead. so the
-  // mic that listens for barge-in just permanently stops working after message #1
-  // and the bot never hears you trying to interrupt it again. classic.
-  // the always-on stream from startBargeListen() already checks botSpeaking
-  // itself inside its own loop, so we don't need to tear it down and rebuild it
-  // every single time the bot starts talking — just leave it running.
   window.speechSynthesis.cancel();
   botSpeaking = true;
   showAudioWave('speaking');  // show yellow wave while bot is speaking
   showVoiceStatus('speaking', '');
   var say = new SpeechSynthesisUtterance(text);
+
+  // Chrome has a well-known bug where speechSynthesis silently pauses after
+  // ~14-15 seconds and never fires onend — super common for any response
+  // longer than a couple sentences. the workaround is to call pause()+resume()
+  // on a regular interval while speaking, which pokes the engine and stops
+  // it from stalling. we clear this interval in both onend and onerror so it
+  // doesn't keep running after the speech is done.
+  var ttsKeepAlive = setInterval(function() {
+    if (!botSpeaking) { clearInterval(ttsKeepAlive); return; }
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+  }, 10000); // every 10s — well inside the ~15s stall window
+
   say.onend = function() {
+    clearInterval(ttsKeepAlive);
     botSpeaking = false;
     showAudioWave(false);   // hide wave when bot finishes
     showVoiceStatus('idle', '');
     listenAgainAfterBot();
   };
   say.onerror = function() {
+    clearInterval(ttsKeepAlive);
     botSpeaking = false;
     showAudioWave(false);
     showVoiceStatus('idle', '');
     listenAgainAfterBot();
   };
   window.speechSynthesis.speak(say);
-  // Start barge monitor whenever bargeInOn is set — continuous mode not required.
-  // This lets the client speak over the bot even with the mic toggle off.
-  if (bargeInOn) {
-    // Make sure the always-on stream is open — it may not be if voice was just enabled
-    if (!bargeListening) startBargeListen();
-    startBargeMonitor();
-  }
 }
 
 function showIntakeForm(){
@@ -3954,6 +3846,7 @@ function sendDirect(t){
   ws.send(JSON.stringify({content:t}));
   inp.value='';
   whisperConfirmedText = ''; // box is cleared so reset the anchor too
+  preVoiceText = '';         // reset pre-voice baseline
   inp.style.height='auto';
   showTyping();
   document.getElementById('send-btn').disabled=true;
@@ -4107,6 +4000,7 @@ function send(){
   ws.send(JSON.stringify({content:t}));
   inp.value='';
   whisperConfirmedText = ''; // box is cleared so reset the anchor too
+  preVoiceText = '';         // reset pre-voice baseline
   inp.style.height='auto';
   showTyping();
   document.getElementById('send-btn').disabled=true;
@@ -4833,7 +4727,7 @@ async def sessions_by_email(email: str):
 
 
 def _load_whisper_model():
-    global _whisper_model
+    global _whisper_model, _whisper_lock
     if _whisper_model != None:
         return _whisper_model
     if not HAS_WHISPER:
@@ -4841,6 +4735,8 @@ def _load_whisper_model():
     try:
         log.info("loading whisper %s (first time takes a while)...", WHISPER_MODEL)
         _whisper_model = _whisper_lib.load_model(WHISPER_MODEL)
+        import threading
+        _whisper_lock = threading.Lock()
         return _whisper_model
     except Exception as exc:
         log.error("could not load whisper: %s", exc)
@@ -4866,7 +4762,11 @@ def _whisper_transcribe_bytes(data, content_type):
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
-        out = model.transcribe(tmp_path, language="en", fp16=False)
+        # acquire the lock so two concurrent asyncio.to_thread calls can't both
+        # call model.transcribe() at the same time — Whisper's internal numpy/
+        # PyTorch state is NOT thread-safe and overlapping calls corrupt results
+        with _whisper_lock:
+            out = model.transcribe(tmp_path, language="en", fp16=False)
         txt = out.get("text") or ""
         return txt.strip()
     finally:
