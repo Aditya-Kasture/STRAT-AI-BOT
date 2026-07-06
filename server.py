@@ -81,13 +81,24 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 # voice transcribe - uses openai whisper from github (free, runs on server)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # tiny is smaller, base is better
 MAX_TRANSCRIBE_BYTES = 5 * 1024 * 1024  # dont upload huge files
+# Importing whisper pulls in PyTorch (~hundreds of MB of RAM at boot), so allow
+# opting out on low-memory hosts, mirroring the DISABLE_RAG pattern above.
+_DISABLE_TRANSCRIBE = os.getenv("DISABLE_TRANSCRIBE", "").lower() in ("1", "true", "yes")
 
 try:
+    if _DISABLE_TRANSCRIBE:
+        raise ImportError("transcription disabled via DISABLE_TRANSCRIBE env var")
     import whisper as _whisper_lib
     HAS_WHISPER = True
 except ImportError:
     _whisper_lib = None
     HAS_WHISPER = False
+
+# Whisper decodes webm/mp4/ogg through ffmpeg; without it every transcribe
+# fails at request time even though the import succeeded. Gate the advertised
+# capability on both so /api/health tells the frontend the truth.
+import shutil as _shutil
+CAN_TRANSCRIBE = HAS_WHISPER and _shutil.which("ffmpeg") is not None
 
 _whisper_model = None  # load once so we dont reload every time
 # Created eagerly at import time (not inside the loader) so two concurrent
@@ -1472,7 +1483,11 @@ async def save_to_supabase(session: Session) -> None:
         return
     try:
         row = _session_to_supabase_row(session)
-        result = _supabase_client.table("sessions").upsert(row, on_conflict="id").execute()
+        # to_thread: supabase-py is synchronous — without this the network
+        # round-trip blocks the event loop for every websocket session
+        result = await asyncio.to_thread(
+            lambda: _supabase_client.table("sessions").upsert(row, on_conflict="id").execute()
+        )
         log.info(f"Supabase save OK for session {session.id[:8]} — rows affected: {len(result.data) if result.data else 0}")
     except Exception as e:
         log.error(f"Supabase save FAILED for session {session.id}: {type(e).__name__}: {e}")
@@ -2907,20 +2922,36 @@ function uploadRecordingContinuous(blob, mimeType, onDone) {
       // Server transcription is broken (whisper not installed, or installed
       // but ffmpeg missing so every request 500s — the prod case on Render).
       // Switch to the browser speech fallback instead of looping failures.
-      if (!result.ok && (result.status == 503 || result.status >= 500) && recognizer) {
+      if (!result.ok && (result.status == 503 || result.status >= 500)) {
         if (result.status == 503) serverTranscribeOk = false;
-        preferBrowserMic = true;
-        stopLivePreview();
-        teardownVadAudio();
-        if (continuousActive) {
-          startBrowserContinuous();
-        } else if (pttActive) {
-          recognizer.continuous = true;
-          recognizer.interimResults = true;
-          startBrowserListening();
+        // Only hand off to the browser mic if a voice session is still live.
+        // If the user hit Stop (or turned Voice off) while this request was
+        // in flight, lighting the wave/badge here would leave a zombie
+        // "listening" UI with nothing actually recording.
+        if (recognizer && (pttActive || continuousActive)) {
+          preferBrowserMic = true;
+          stopLivePreview();
+          teardownVadAudio();
+          if (continuousActive) {
+            startBrowserContinuous();
+          } else {
+            recognizer.continuous = true;
+            recognizer.interimResults = true;
+            startBrowserListening();
+          }
+          showVoiceStatus('listening', 'using browser mic');
+          showAudioWave('listening');
+        } else if (pttActive || continuousActive) {
+          // No browser fallback available — end the voice session cleanly
+          // instead of leaving the wave lit with nothing recording.
+          stopLivePreview();
+          if (continuousActive) stopContinuousMode();
+          teardownVadAudio();
+          pttActive = false;
+          micListening = false;
+          showAudioWave(false);
+          showVoiceStatus('idle', 'transcribe failed — type your answer');
         }
-        showVoiceStatus('listening', 'using browser mic');
-        showAudioWave('listening');
         return; // whisper VAD loop is dead — don't resume it via onDone
       }
       if (result.ok && result.data.text) {
@@ -2959,8 +2990,11 @@ function startPttVad() {
     if (recognizer) {
       recognizer.continuous = true;
       recognizer.interimResults = true;
-      try { recognizer.start(); } catch(e) {}
+      // snapshots the box anchors before starting so interim results
+      // can't clobber text the user already typed
+      startBrowserListening();
     }
+    micBtnBusy = false; // no getUserMedia happens on this path
     return;
   }
   teardownVadAudio(); // close any leftover stream/context before opening a new one
@@ -3110,7 +3144,10 @@ if (SpeechRec) {
       inp.value = full;
       inp.style.height = 'auto';
       inp.style.height = Math.min(inp.scrollHeight, 140) + 'px';
-      inp.focus();
+      // Only steal focus when we're NOT hands-free: the textarea's own
+      // 'focus' listener tears down continuous mode, so focusing here would
+      // kill the mic after the first finalized phrase.
+      if (!continuousActive) inp.focus();
       showVoiceStatus('idle', 'ready — edit or press Send');
       // If still in continuous mode, keep listening for the next utterance
       if (continuousActive && continuousOn) {
@@ -3371,7 +3408,10 @@ if (micBtn) {
     } else if (recognizer) {
       recognizer.continuous = true;
       recognizer.interimResults = true;
-      try { recognizer.start(); } catch(e) {}
+      // startBrowserListening snapshots the box anchors BEFORE starting, so
+      // interim results can't overwrite text the user already typed
+      startBrowserListening();
+      micBtnBusy = false; // no getUserMedia in this path, clear the mutex here
     } else {
       micListening = false;
       pttActive = false;
@@ -4725,8 +4765,10 @@ def _whisper_transcribe_bytes(data, content_type):
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data)
+            # capture the name BEFORE writing so the finally-cleanup still
+            # removes the file if the write itself fails (e.g. disk full)
             tmp_path = tmp.name
+            tmp.write(data)
         # acquire the lock so two concurrent asyncio.to_thread calls can't both
         # call model.transcribe() at the same time — Whisper's internal numpy/
         # PyTorch state is NOT thread-safe and overlapping calls corrupt results
@@ -4747,11 +4789,17 @@ async def health():
     supabase_rows = None
     if _supabase_client:
         try:
-            r = _supabase_client.table("sessions").select("id", count="exact").limit(1).execute()
+            # to_thread: supabase-py is synchronous; don't stall the event loop
+            r = await asyncio.to_thread(
+                lambda: _supabase_client.table("sessions").select("id", count="exact").limit(1).execute()
+            )
             supabase_rows = r.count if hasattr(r, "count") else None
             supabase_status = "connected"
         except Exception as e:
-            supabase_status = f"error: {type(e).__name__}: {e}"
+            # type name only — full exception text can leak the project URL
+            # on this unauthenticated endpoint (details go to the logs)
+            log.warning(f"Supabase health probe failed: {type(e).__name__}: {e}")
+            supabase_status = f"error: {type(e).__name__}"
     return {
         "status": "ok",
         "rag_ready": rag.ready,
@@ -4762,7 +4810,7 @@ async def health():
         "has_supabase_env": bool(SUPABASE_URL and SUPABASE_KEY),
         "supabase": supabase_status,
         "supabase_total_rows": supabase_rows,
-        "has_transcribe": HAS_WHISPER,
+        "has_transcribe": CAN_TRANSCRIBE,
     }
 
 
@@ -4791,16 +4839,29 @@ def _transcribe_rate_ok(ip: str) -> bool:
 @app.post("/api/transcribe")
 async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
     # browser sends recorded audio blob, we return text
-    if not HAS_WHISPER:
-        return JSONResponse({"error": "whisper not installed"}, status_code=503)
-    client_ip = request.client.host if request.client else "unknown"
+    if not CAN_TRANSCRIBE:
+        return JSONResponse({"error": "transcription unavailable"}, status_code=503)
+    # Behind Render's proxy every request has the proxy as its peer, which
+    # would collapse the per-IP limit into one global bucket. Prefer the
+    # first X-Forwarded-For hop when present (spoofable, but this is a soft
+    # throttle, not an auth boundary).
+    fwd = request.headers.get("x-forwarded-for", "")
+    client_ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
     if not _transcribe_rate_ok(client_ip):
         return JSONResponse({"error": "too many requests, slow down"}, status_code=429)
+    # Reject oversized uploads from the declared length before reading the
+    # body, so a huge POST can't be fully spooled just to get a 400.
+    try:
+        declared = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        declared = 0
+    if declared > MAX_TRANSCRIBE_BYTES + 4096:  # small allowance for multipart framing
+        return JSONResponse({"error": "audio too big"}, status_code=413)
     data = await audio.read()
     if len(data) == 0:
         return JSONResponse({"error": "empty audio"}, status_code=400)
     if len(data) > MAX_TRANSCRIBE_BYTES:
-        return JSONResponse({"error": "audio too big"}, status_code=400)
+        return JSONResponse({"error": "audio too big"}, status_code=413)
     ctype = audio.content_type or "audio/webm"
     try:
         text = await asyncio.to_thread(_whisper_transcribe_bytes, data, ctype)
@@ -5264,10 +5325,12 @@ if __name__ == "__main__":
         log.error("=" * 60)
     elif LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY.startswith("sk-ant-"):
         log.warning("ANTHROPIC_API_KEY doesn't start with 'sk-ant-' -- double check it's correct")
-    if not HAS_WHISPER:
-        log.warning("whisper not installed - voice will use browser speech only")
+    if CAN_TRANSCRIBE:
+        log.info("voice: whisper model=%s, ffmpeg found", WHISPER_MODEL)
+    elif HAS_WHISPER:
+        log.warning("whisper installed but ffmpeg missing - voice will use browser speech only")
     else:
-        log.info("voice: whisper model=%s (need ffmpeg installed)", WHISPER_MODEL)
+        log.warning("whisper not installed/disabled - voice will use browser speech only")
     log.info(f"Admin dashboard: http://localhost:{PORT}/admin")
     log.info(f"Open http://localhost:{PORT}")
     uvicorn.run(app, host=HOST, port=PORT)

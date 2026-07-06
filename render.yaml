@@ -4,8 +4,9 @@ services:
     runtime: python
     plan: starter
     # NOTE: apt-get is not available on Render's native Python runtime, so
-    # ffmpeg (needed by whisper to decode webm) can't be installed here.
-    # Whisper simply won't activate in prod; /api/health reports
+    # ffmpeg (needed by whisper to decode webm) can't be installed here, and
+    # torch alone would strain the starter plan's 512MB RAM. Transcription is
+    # therefore disabled via DISABLE_TRANSCRIBE below; /api/health reports
     # has_transcribe=false and the frontend falls back to browser speech
     # recognition automatically. Server-side whisper works in local dev.
     buildCommand: pip install -r requirements.txt
@@ -52,3 +53,5 @@ services:
         sync: false
       - key: WHISPER_MODEL
         value: tiny
+      - key: DISABLE_TRANSCRIBE
+        value: true
