@@ -3,7 +3,12 @@ services:
     name: strat-ai-bot
     runtime: python
     plan: starter
-    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt
+    # NOTE: apt-get is not available on Render's native Python runtime, so
+    # ffmpeg (needed by whisper to decode webm) can't be installed here.
+    # Whisper simply won't activate in prod; /api/health reports
+    # has_transcribe=false and the frontend falls back to browser speech
+    # recognition automatically. Server-side whisper works in local dev.
+    buildCommand: pip install -r requirements.txt
     startCommand: python server.py
     healthCheckPath: /api/health
     envVars:

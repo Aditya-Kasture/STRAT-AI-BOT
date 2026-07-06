@@ -14,6 +14,7 @@ import re
 import time
 import base64
 import tempfile
+import threading
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional, List, Dict, Any
@@ -89,7 +90,11 @@ except ImportError:
     HAS_WHISPER = False
 
 _whisper_model = None  # load once so we dont reload every time
-_whisper_lock = None   # threading lock — model.transcribe() is NOT thread-safe
+# Created eagerly at import time (not inside the loader) so two concurrent
+# first requests can never race on a half-initialised lock. The same lock
+# guards both lazy model loading and transcription — model.transcribe()
+# is NOT thread-safe.
+_whisper_lock = threading.Lock()
 
 # Initialise Supabase client once at startup (only if credentials are present)
 _supabase_client = None
@@ -2643,14 +2648,9 @@ var continuousActive = false; // true when always-listening loop running
 var recognizer = null;        // chrome web speech api object — used when Whisper isn't available
 var livePreviewRec = null;    // separate SpeechRecognition instance just for live interim text display
 var micListening = false;     // currently set to false but true anytime we are listening for the users audio
-var mediaRecorder = null;     // push to talk recording
-var recordChunks = [];        // array that will collect the little pieces of audio data when we record
-var recordStream = null;      // The microphone stream
-var recordTimer = null;       // timer to auto stop recording after it reaches max length
 var preferBrowserMic = false; // if whisper fails use chrome instead
 var serverTranscribeOk = false; // Makes sure that the server can do transcription
 var healthCheckDone = false;    // true once /api/health has returned
-var maxRecordSec = 30;        // cap ptt recording length
 var pttActive = false;        // push to talk in progress
 
 // VAD variables just took a blind guess with the numbers.
@@ -2767,13 +2767,6 @@ function stopContinuousMode() {
   if (!botSpeaking) showVoiceStatus('idle', '');
 }
 
-function stopRecordStream() {
-  if (recordStream) {
-    recordStream.getTracks().forEach(function(t) { t.stop(); });
-    recordStream = null;
-  }
-}
-
 function howLoudIsIt(analyser) {
   // Pre-allocate the buffer on the analyser node itself so we reuse the same
   // array every frame instead of doing `new Uint8Array(fftSize)` ~60 times/sec.
@@ -2815,61 +2808,6 @@ function pickMimeType() {
   if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4';
   if (MediaRecorder.isTypeSupported('audio/ogg')) return 'audio/ogg';
   return 'audio/webm';
-}
-
-function uploadRecording(blob, mimeType) {
-  // Don't kill continuousActive here — we want the mic to keep going
-  showVoiceStatus('transcribing', 'transcribing...');
-  var form = new FormData();
-  var ext = 'webm';
-  if (mimeType.indexOf('mp4') >= 0) ext = 'mp4';
-  if (mimeType.indexOf('ogg') >= 0) ext = 'ogg';
-  form.append('audio', blob, 'recording.' + ext);
-  fetch('/api/transcribe', { method: 'POST', body: form })
-    .then(function(resp) {
-      return resp.json().then(function(data) {
-        return { ok: resp.ok, status: resp.status, data: data };
-      });
-    })
-    .then(function(result) {
-      if (result.ok && result.data.text) {
-        // Append transcribed text to whatever is already in the box.
-        // Each spoken chunk gets added with a space — client edits the
-        // whole thing before hitting Send.
-        var transcribed = result.data.text.trim();
-        var existing = inp.value.trim();
-        inp.value = existing ? existing + ' ' + transcribed : transcribed;
-        inp.style.height = 'auto';
-        inp.style.height = Math.min(inp.scrollHeight, 140) + 'px';
-        // Show a subtle hint but keep the wave going — mic is still live
-        showVoiceStatus('listening', 'listening... press Send when ready');
-        showAudioWave('listening');
-        // If mic toggle is still on, immediately restart the VAD loop.
-        // teardownVadAudio first so we don't leak the previous stream.
-        if (pttActive && voiceOn) {
-          micListening = true;
-          teardownVadAudio();
-          startPttVad();
-        }
-        return;
-      }
-      // Transcription failed — fall back to browser speech or show error
-      if (result.status == 503) serverTranscribeOk = false;
-      if (recognizer) {
-        preferBrowserMic = true;
-        showVoiceStatus('listening', 'using browser mic');
-        if (pttActive && voiceOn) startBrowserListening();
-      } else {
-        showAudioWave(false);
-        micListening = false;
-        showVoiceStatus('idle', 'transcribe failed — type your answer');
-      }
-    })
-    .catch(function() {
-      showAudioWave(false);
-      micListening = false;
-      showVoiceStatus('idle', 'transcribe error — type your answer');
-    });
 }
 
 function finishContRecording() {
@@ -2964,8 +2902,27 @@ function uploadRecordingContinuous(blob, mimeType, onDone) {
   var form = new FormData();
   form.append('audio', blob, 'recording.' + ext);
   fetch('/api/transcribe', { method: 'POST', body: form })
-    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, status: r.status, data: d }; }); })
     .then(function(result) {
+      // Server transcription is broken (whisper not installed, or installed
+      // but ffmpeg missing so every request 500s — the prod case on Render).
+      // Switch to the browser speech fallback instead of looping failures.
+      if (!result.ok && (result.status == 503 || result.status >= 500) && recognizer) {
+        if (result.status == 503) serverTranscribeOk = false;
+        preferBrowserMic = true;
+        stopLivePreview();
+        teardownVadAudio();
+        if (continuousActive) {
+          startBrowserContinuous();
+        } else if (pttActive) {
+          recognizer.continuous = true;
+          recognizer.interimResults = true;
+          startBrowserListening();
+        }
+        showVoiceStatus('listening', 'using browser mic');
+        showAudioWave('listening');
+        return; // whisper VAD loop is dead — don't resume it via onDone
+      }
       if (result.ok && result.data.text) {
         // Append confirmed Whisper text — this is the accurate version
         var word = result.data.text.trim();
@@ -4514,6 +4471,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 session.company_name = msg.get("company", "")
                 session.stage = Stage.CLASSIFY
                 log.info(f"Intake: {session.contact_name} / {session.contact_email} / {session.company_name}")
+                # Persist the lead to Supabase IMMEDIATELY so the contact is captured
+                # the moment they submit — even if they drop off before any chat reply,
+                # or the classification LLM call below fails. (await, not fire-and-forget,
+                # so write errors surface in the logs right here.)
+                await save_to_supabase(session)
                 # Send initial classification message
                 result = await handle_message(
                     session,
@@ -4727,26 +4689,29 @@ async def sessions_by_email(email: str):
 
 
 def _load_whisper_model():
-    global _whisper_model, _whisper_lock
-    if _whisper_model != None:
+    global _whisper_model
+    if _whisper_model is not None:
         return _whisper_model
     if not HAS_WHISPER:
         return None
-    try:
-        log.info("loading whisper %s (first time takes a while)...", WHISPER_MODEL)
-        _whisper_model = _whisper_lib.load_model(WHISPER_MODEL)
-        import threading
-        _whisper_lock = threading.Lock()
-        return _whisper_model
-    except Exception as exc:
-        log.error("could not load whisper: %s", exc)
-        return None
+    # Double-checked lazy load: without the lock, two concurrent first
+    # requests would each load the model (hundreds of MB) side by side.
+    with _whisper_lock:
+        if _whisper_model is not None:
+            return _whisper_model
+        try:
+            log.info("loading whisper %s (first time takes a while)...", WHISPER_MODEL)
+            _whisper_model = _whisper_lib.load_model(WHISPER_MODEL)
+            return _whisper_model
+        except Exception as exc:
+            log.error("could not load whisper: %s", exc)
+            return None
 
 
 def _whisper_transcribe_bytes(data, content_type):
     # whisper wants a file on disk so we write temp file
     model = _load_whisper_model()
-    if model == None:
+    if model is None:
         raise RuntimeError("no whisper")
     ct = (content_type or "").lower()
     if "mp4" in ct:
@@ -4776,6 +4741,17 @@ def _whisper_transcribe_bytes(data, content_type):
 
 @app.get("/api/health")
 async def health():
+    # Lightweight Supabase reachability probe (no auth needed) so persistence
+    # problems are visible on the live domain without logging into /admin.
+    supabase_status = "not_configured"
+    supabase_rows = None
+    if _supabase_client:
+        try:
+            r = _supabase_client.table("sessions").select("id", count="exact").limit(1).execute()
+            supabase_rows = r.count if hasattr(r, "count") else None
+            supabase_status = "connected"
+        except Exception as e:
+            supabase_status = f"error: {type(e).__name__}: {e}"
     return {
         "status": "ok",
         "rag_ready": rag.ready,
@@ -4783,15 +4759,43 @@ async def health():
         "llm_model": LLM_MODEL,
         "active_sessions": len(store._sessions),
         "has_anthropic_key": bool(ANTHROPIC_API_KEY),
+        "has_supabase_env": bool(SUPABASE_URL and SUPABASE_KEY),
+        "supabase": supabase_status,
+        "supabase_total_rows": supabase_rows,
         "has_transcribe": HAS_WHISPER,
     }
 
 
+# Simple in-memory per-IP throttle for the transcribe endpoint. Whisper
+# inference is CPU-heavy and the endpoint is unauthenticated, so without
+# this anyone could pin the server with a curl loop.
+_transcribe_hits: Dict[str, List[float]] = {}
+TRANSCRIBE_MAX_PER_MIN = 20
+
+
+def _transcribe_rate_ok(ip: str) -> bool:
+    now = time.time()
+    hits = [t for t in _transcribe_hits.get(ip, []) if now - t < 60]
+    if len(hits) >= TRANSCRIBE_MAX_PER_MIN:
+        _transcribe_hits[ip] = hits
+        return False
+    hits.append(now)
+    _transcribe_hits[ip] = hits
+    # keep the dict from growing forever — prune dead IPs occasionally
+    if len(_transcribe_hits) > 1000:
+        for k in [k for k, v in _transcribe_hits.items() if not v or now - v[-1] > 120]:
+            _transcribe_hits.pop(k, None)
+    return True
+
+
 @app.post("/api/transcribe")
-async def transcribe_audio(audio: UploadFile = File(...)):
+async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
     # browser sends recorded audio blob, we return text
     if not HAS_WHISPER:
         return JSONResponse({"error": "whisper not installed"}, status_code=503)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _transcribe_rate_ok(client_ip):
+        return JSONResponse({"error": "too many requests, slow down"}, status_code=429)
     data = await audio.read()
     if len(data) == 0:
         return JSONResponse({"error": "empty audio"}, status_code=400)
