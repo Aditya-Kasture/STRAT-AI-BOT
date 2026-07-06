@@ -1,4 +1,7 @@
 .env
+env.txt
+.DS_Store
+*.code-workspace
 __pycache__/
 *.pyc
 chroma_db/
