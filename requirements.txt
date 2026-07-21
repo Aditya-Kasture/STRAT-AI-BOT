@@ -7,4 +7,9 @@ python-docx>=1.1.0
 supabase>=2.0.0
 storage3<0.9
 python-multipart>=0.0.9
-openai-whisper>=20231117
+# openai-whisper (server-side transcription) is intentionally NOT installed on
+# Render: it pulls in PyTorch (~800MB+), which fails/times out on the starter
+# plan, and transcription is disabled there anyway (DISABLE_TRANSCRIBE=true) —
+# the frontend falls back to browser speech recognition. The import is guarded
+# (HAS_WHISPER=False if missing), so the server runs fine without it.
+# For local dev with server-side whisper, run: pip install "openai-whisper>=20231117"
